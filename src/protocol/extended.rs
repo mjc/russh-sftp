@@ -1,6 +1,10 @@
 use super::{impl_packet_for, impl_request_id, Packet, RequestId};
 use crate::{de::data_deserialize, ser::data_serialize};
 
+// TODO: Change `data` field from Vec<u8> to Bytes to avoid copies.
+// Requires updating RawSftpSession::extended(), Handler::extended(), and
+// the extension structs' TryInto implementations (breaking change).
+
 /// Implementation for `SSH_FXP_EXTENDED`
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Extended {

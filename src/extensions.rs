@@ -7,6 +7,8 @@ pub const STATVFS: &str = "statvfs@openssh.com";
 
 macro_rules! impl_try_into_bytes {
     ($struct:ty) => {
+        // TODO: Change to TryInto<Bytes> to avoid the .to_vec() copy.
+        // Requires changing Extended.data from Vec<u8> to Bytes (breaking change).
         impl TryInto<Vec<u8>> for $struct {
             type Error = Error;
 
