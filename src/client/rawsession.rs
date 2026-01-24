@@ -363,7 +363,7 @@ impl RawSftpSession {
                     id,
                     handle: handle.into(),
                     offset,
-                    data,
+                    data: data.into(),
                 }
                 .into(),
             )

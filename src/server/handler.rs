@@ -1,5 +1,7 @@
 use std::{collections::HashMap, future::Future};
 
+use bytes::Bytes;
+
 use crate::protocol::{
     Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusCode, Version,
 };
@@ -71,7 +73,7 @@ pub trait Handler: Sized {
         id: u32,
         handle: String,
         offset: u64,
-        data: Vec<u8>,
+        data: Bytes,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
