@@ -258,7 +258,7 @@ impl TryFrom<Packet> for Bytes {
     fn try_from(packet: Packet) -> Result<Self, Self::Error> {
         // Estimate capacity based on packet type to avoid reallocations
         let capacity = match &packet {
-            Packet::Write(w) => 32 + w.data.len(),
+            Packet::Write(w) => 32 + w.handle.len() + w.data.len(),
             Packet::Data(d) => 16 + d.data.len(),
             _ => 256,
         };
