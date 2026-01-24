@@ -17,7 +17,7 @@ where
     T::deserialize(&mut deserializer)
 }
 
-/// Deserilization of a [`Vec`] without length. Usually reads until the end byte
+/// Deserialization of a [`Vec`] without length. Usually reads until the end byte
 /// or end of the packet because the size is unknown.
 pub fn data_deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
 where
@@ -45,6 +45,72 @@ where
     }
 
     deserializer.deserialize_any(DataVisitor)
+}
+
+/// Deserialization of `Vec<u8>` using bulk byte reads instead of element-by-element.
+/// Use with `#[serde(deserialize_with = "crate::de::vec_bytes")]` on `Vec<u8>` fields.
+pub fn vec_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct VecBytesVisitor;
+
+    impl<'de> Visitor<'de> for VecBytesVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("byte array")
+        }
+
+        fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(v)
+        }
+
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(v.to_vec())
+        }
+    }
+
+    deserializer.deserialize_byte_buf(VecBytesVisitor)
+}
+
+/// Deserialization of `Bytes` from length-prefixed byte data.
+/// Use with `#[serde(deserialize_with = "crate::de::bytes_deserialize")]` on `Bytes` fields.
+pub fn bytes_deserialize<'de, D>(deserializer: D) -> Result<Bytes, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct BytesVisitor;
+
+    impl<'de> Visitor<'de> for BytesVisitor {
+        type Value = Bytes;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("byte array")
+        }
+
+        fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Bytes::from(v))
+        }
+
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Bytes::copy_from_slice(v))
+        }
+    }
+
+    deserializer.deserialize_byte_buf(BytesVisitor)
 }
 
 impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
@@ -163,14 +229,17 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_bytes(&self.input.try_get_bytes()?)
+        let bytes = self.input.try_get_bytes()?;
+        visitor.visit_bytes(&bytes)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_bytes(visitor)
+        let bytes = self.input.try_get_bytes()?;
+        // Pass owned Vec to visitor so it can take ownership
+        visitor.visit_byte_buf(bytes.to_vec())
     }
 
     fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
@@ -391,5 +460,84 @@ impl<'de> EnumAccess<'de> for &mut Deserializer<'de> {
     {
         let v = IntoDeserializer::<Self::Error>::into_deserializer(self.input.try_get_u32()?);
         Ok((seed.deserialize(v)?, self))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ser;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct BytesField {
+        id: u32,
+        #[serde(deserialize_with = "bytes_deserialize")]
+        #[serde(serialize_with = "crate::ser::bytes_serialize")]
+        data: Bytes,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct VecBytesField {
+        id: u32,
+        #[serde(deserialize_with = "vec_bytes")]
+        data: Vec<u8>,
+    }
+
+    #[test]
+    fn bytes_deserialize_roundtrip() {
+        let original = BytesField {
+            id: 42,
+            data: Bytes::from_static(b"test data"),
+        };
+
+        let serialized = ser::to_bytes(&original).expect("serialize failed");
+        let mut bytes = serialized;
+        let deserialized: BytesField = from_bytes(&mut bytes).expect("deserialize failed");
+
+        assert_eq!(deserialized, original);
+    }
+
+    #[test]
+    fn bytes_deserialize_empty() {
+        let original = BytesField {
+            id: 1,
+            data: Bytes::new(),
+        };
+
+        let serialized = ser::to_bytes(&original).expect("serialize failed");
+        let mut bytes = serialized;
+        let deserialized: BytesField = from_bytes(&mut bytes).expect("deserialize failed");
+
+        assert_eq!(deserialized.data.len(), 0);
+    }
+
+    #[test]
+    fn vec_bytes_roundtrip() {
+        let original = VecBytesField {
+            id: 99,
+            data: vec![1, 2, 3, 4, 5],
+        };
+
+        let serialized = ser::to_bytes(&original).expect("serialize failed");
+        let mut bytes = serialized;
+        let deserialized: VecBytesField = from_bytes(&mut bytes).expect("deserialize failed");
+
+        assert_eq!(deserialized.id, original.id);
+        assert_eq!(deserialized.data, original.data);
+    }
+
+    #[test]
+    fn vec_bytes_empty() {
+        let original = VecBytesField {
+            id: 0,
+            data: vec![],
+        };
+
+        let serialized = ser::to_bytes(&original).expect("serialize failed");
+        let mut bytes = serialized;
+        let deserialized: VecBytesField = from_bytes(&mut bytes).expect("deserialize failed");
+
+        assert!(deserialized.data.is_empty());
     }
 }

@@ -22,6 +22,19 @@ where
     Ok(serializer.output.freeze())
 }
 
+/// Serialize directly into an existing BytesMut buffer
+pub fn to_bytes_into<T>(value: &T, output: &mut BytesMut) -> Result<(), Error>
+where
+    T: serde::Serialize + ?Sized,
+{
+    let mut serializer = Serializer {
+        output: std::mem::take(output),
+    };
+    value.serialize(&mut serializer)?;
+    *output = serializer.output;
+    Ok(())
+}
+
 /// Serialization of a [`Vec`] without length.
 pub fn data_serialize<S>(data: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -32,6 +45,15 @@ where
         seq.serialize_element(byte)?;
     }
     seq.end()
+}
+
+/// Serialization of [`Bytes`] with length prefix.
+pub fn bytes_serialize<S>(data: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    // Use serialize_bytes for bulk copy instead of element-by-element
+    serializer.serialize_bytes(data)
 }
 
 impl<'a> serde::Serializer for &'a mut Serializer {
@@ -103,8 +125,10 @@ impl<'a> serde::Serializer for &'a mut Serializer {
         Ok(())
     }
 
-    fn serialize_bytes(self, _v: &[u8]) -> Result<Self::Ok, Self::Error> {
-        Err(Error::BadMessage("bytes not supported".to_owned()))
+    fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
+        self.output.put_u32(v.len() as u32);
+        self.output.put_slice(v);
+        Ok(())
     }
 
     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
@@ -332,5 +356,79 @@ impl SerializeTupleVariant for &mut Serializer {
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::de;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct BytesStruct {
+        id: u32,
+        #[serde(deserialize_with = "crate::de::bytes_deserialize")]
+        #[serde(serialize_with = "bytes_serialize")]
+        data: Bytes,
+    }
+
+    #[test]
+    fn bytes_serialize_produces_length_prefix() {
+        let value = BytesStruct {
+            id: 1,
+            data: Bytes::from_static(b"abc"),
+        };
+
+        let serialized = to_bytes(&value).expect("serialize failed");
+
+        // Expected format: u32 id (4 bytes) + u32 length (4 bytes) + data (3 bytes)
+        assert_eq!(serialized.len(), 4 + 4 + 3);
+        // Check length prefix is 3
+        assert_eq!(&serialized[4..8], &[0, 0, 0, 3]);
+        // Check data
+        assert_eq!(&serialized[8..], b"abc");
+    }
+
+    #[test]
+    fn bytes_serialize_empty() {
+        let value = BytesStruct {
+            id: 42,
+            data: Bytes::new(),
+        };
+
+        let serialized = to_bytes(&value).expect("serialize failed");
+
+        // Expected: u32 id + u32 length (0)
+        assert_eq!(serialized.len(), 4 + 4);
+        // Check length prefix is 0
+        assert_eq!(&serialized[4..8], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn bytes_serialize_roundtrip() {
+        let original = BytesStruct {
+            id: 123,
+            data: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        };
+
+        let serialized = to_bytes(&original).expect("serialize failed");
+        let mut bytes = serialized;
+        let deserialized: BytesStruct = de::from_bytes(&mut bytes).expect("deserialize failed");
+
+        assert_eq!(deserialized, original);
+    }
+
+    #[test]
+    fn to_bytes_into_appends() {
+        let value = 42u32;
+        let mut buf = BytesMut::from(&[0xFFu8, 0xFF][..]);
+
+        to_bytes_into(&value, &mut buf).expect("serialize failed");
+
+        // Should have original 2 bytes + 4 bytes for u32
+        assert_eq!(buf.len(), 6);
+        assert_eq!(&buf[..2], &[0xFF, 0xFF]);
+        assert_eq!(&buf[2..], &[0, 0, 0, 42]);
     }
 }
