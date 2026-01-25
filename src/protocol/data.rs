@@ -1,6 +1,8 @@
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 
 use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+use crate::buf::TryBuf;
+use crate::error::Error;
 
 /// Implementation for `SSH_FXP_DATA`
 #[derive(Debug, Serialize, Deserialize)]
@@ -9,6 +11,16 @@ pub struct Data {
     #[serde(deserialize_with = "crate::de::bytes_deserialize")]
     #[serde(serialize_with = "crate::ser::bytes_serialize")]
     pub data: Bytes,
+}
+
+impl Data {
+    /// Zero-copy deserialization from Bytes.
+    /// This bypasses serde to avoid the Vec allocation in the data field.
+    pub fn from_bytes(input: &mut Bytes) -> Result<Self, Error> {
+        let id = input.try_get_u32().map_err(|e| Error::BadMessage(e.to_string()))?;
+        let data = input.try_get_bytes()?;
+        Ok(Data { id, data })
+    }
 }
 
 impl_request_id!(Data);

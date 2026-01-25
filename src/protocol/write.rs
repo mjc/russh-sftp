@@ -1,6 +1,8 @@
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 
 use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+use crate::buf::TryBuf;
+use crate::error::Error;
 
 /// Implementation for `SSH_FXP_WRITE`
 #[derive(Debug, Serialize, Deserialize)]
@@ -11,6 +13,18 @@ pub struct Write {
     #[serde(deserialize_with = "crate::de::bytes_deserialize")]
     #[serde(serialize_with = "crate::ser::bytes_serialize")]
     pub data: Bytes,
+}
+
+impl Write {
+    /// Zero-copy deserialization from Bytes.
+    /// This bypasses serde to avoid the Vec allocation in the data field.
+    pub fn from_bytes(input: &mut Bytes) -> Result<Self, Error> {
+        let id = input.try_get_u32().map_err(|e| Error::BadMessage(e.to_string()))?;
+        let handle = input.try_get_string()?;
+        let offset = input.try_get_u64().map_err(|e| Error::BadMessage(e.to_string()))?;
+        let data = input.try_get_bytes()?;
+        Ok(Write { id, handle, offset, data })
+    }
 }
 
 impl_request_id!(Write);

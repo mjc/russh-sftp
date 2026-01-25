@@ -207,7 +207,8 @@ impl TryFrom<&mut Bytes> for Packet {
             SSH_FXP_OPEN => Self::Open(de::from_bytes(bytes)?),
             SSH_FXP_CLOSE => Self::Close(de::from_bytes(bytes)?),
             SSH_FXP_READ => Self::Read(de::from_bytes(bytes)?),
-            SSH_FXP_WRITE => Self::Write(de::from_bytes(bytes)?),
+            // Zero-copy deserialization - bypasses serde to avoid Vec allocation
+            SSH_FXP_WRITE => Self::Write(Write::from_bytes(bytes)?),
             SSH_FXP_LSTAT => Self::Lstat(de::from_bytes(bytes)?),
             SSH_FXP_FSTAT => Self::Fstat(de::from_bytes(bytes)?),
             SSH_FXP_SETSTAT => Self::SetStat(de::from_bytes(bytes)?),
@@ -224,7 +225,8 @@ impl TryFrom<&mut Bytes> for Packet {
             SSH_FXP_SYMLINK => Self::Symlink(de::from_bytes(bytes)?),
             SSH_FXP_STATUS => Self::Status(de::from_bytes(bytes)?),
             SSH_FXP_HANDLE => Self::Handle(de::from_bytes(bytes)?),
-            SSH_FXP_DATA => Self::Data(de::from_bytes(bytes)?),
+            // Zero-copy deserialization - bypasses serde to avoid Vec allocation
+            SSH_FXP_DATA => Self::Data(Data::from_bytes(bytes)?),
             SSH_FXP_NAME => Self::Name(de::from_bytes(bytes)?),
             SSH_FXP_ATTRS => Self::Attrs(de::from_bytes(bytes)?),
             SSH_FXP_EXTENDED => Self::Extended(de::from_bytes(bytes)?),
