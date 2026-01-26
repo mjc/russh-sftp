@@ -15,12 +15,23 @@ pub async fn read_packet_into<S: AsyncRead + Unpin>(
     stream: &mut S,
     buf: &mut BytesMut,
 ) -> Result<Bytes, Error> {
-    let length = stream.read_u32().await?;
+    use tokio::io::AsyncReadExt;
 
-    buf.clear(); // Reset length to 0, keeps capacity, doesn't zero
-    buf.resize(length as usize, 0); // Extend to needed size (may zero new bytes if growing)
+    let length = stream.read_u32().await? as usize;
 
-    stream.read_exact(buf).await?;
+    buf.clear();
+
+    // Limit the reader to exactly `length` bytes, then read_buf into spare capacity.
+    // This avoids zeroing while preventing over-reading.
+    let mut limited = stream.take(length as u64);
+    buf.reserve(length);
+
+    while buf.len() < length {
+        let n = limited.read_buf(buf).await?;
+        if n == 0 {
+            return Err(Error::UnexpectedEof);
+        }
+    }
 
     Ok(buf.split().freeze())
 }

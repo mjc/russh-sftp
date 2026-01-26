@@ -255,56 +255,66 @@ macro_rules! serialize_packet {
     };
 }
 
+/// Serialize a packet into an existing buffer, returning the bytes.
+/// Clears the buffer first but reuses its capacity to avoid allocation.
+pub fn serialize_packet_into(packet: Packet, buf: &mut BytesMut) -> Result<Bytes, Error> {
+    buf.clear();
+
+    // Estimate capacity based on packet type to avoid reallocations
+    let capacity = match &packet {
+        Packet::Write(w) => 32 + w.handle.len() + w.data.len(),
+        Packet::Data(d) => 16 + d.data.len(),
+        _ => 256,
+    };
+    buf.reserve(capacity);
+
+    // Single buffer: [length:4][type:1][payload...]
+    buf.put_u32(0); // placeholder for length
+
+    let serializer = serialize_packet!(buf,
+        Init => SSH_FXP_INIT,
+        Version => SSH_FXP_VERSION,
+        Open => SSH_FXP_OPEN,
+        Close => SSH_FXP_CLOSE,
+        Read => SSH_FXP_READ,
+        Write => SSH_FXP_WRITE,
+        Lstat => SSH_FXP_LSTAT,
+        Fstat => SSH_FXP_FSTAT,
+        SetStat => SSH_FXP_SETSTAT,
+        FSetStat => SSH_FXP_FSETSTAT,
+        OpenDir => SSH_FXP_OPENDIR,
+        ReadDir => SSH_FXP_READDIR,
+        Remove => SSH_FXP_REMOVE,
+        MkDir => SSH_FXP_MKDIR,
+        RmDir => SSH_FXP_RMDIR,
+        RealPath => SSH_FXP_REALPATH,
+        Stat => SSH_FXP_STAT,
+        Rename => SSH_FXP_RENAME,
+        ReadLink => SSH_FXP_READLINK,
+        Symlink => SSH_FXP_SYMLINK,
+        Status => SSH_FXP_STATUS,
+        Handle => SSH_FXP_HANDLE,
+        Data => SSH_FXP_DATA,
+        Name => SSH_FXP_NAME,
+        Attrs => SSH_FXP_ATTRS,
+        Extended => SSH_FXP_EXTENDED,
+        ExtendedReply => SSH_FXP_EXTENDED_REPLY,
+    );
+    serializer(packet, buf)?;
+
+    // Patch length (excludes the 4-byte length field itself)
+    let length = (buf.len() - 4) as u32;
+    buf[0..4].copy_from_slice(&length.to_be_bytes());
+
+    Ok(buf.split().freeze())
+}
+
 impl TryFrom<Packet> for Bytes {
     type Error = Error;
 
     fn try_from(packet: Packet) -> Result<Self, Self::Error> {
-        // Estimate capacity based on packet type to avoid reallocations
-        let capacity = match &packet {
-            Packet::Write(w) => 32 + w.handle.len() + w.data.len(),
-            Packet::Data(d) => 16 + d.data.len(),
-            _ => 256,
-        };
-        // Single buffer: [length:4][type:1][payload...]
-        let mut bytes = BytesMut::with_capacity(capacity);
-        bytes.put_u32(0); // placeholder for length
-
-        let serializer = serialize_packet!(bytes,
-            Init => SSH_FXP_INIT,
-            Version => SSH_FXP_VERSION,
-            Open => SSH_FXP_OPEN,
-            Close => SSH_FXP_CLOSE,
-            Read => SSH_FXP_READ,
-            Write => SSH_FXP_WRITE,
-            Lstat => SSH_FXP_LSTAT,
-            Fstat => SSH_FXP_FSTAT,
-            SetStat => SSH_FXP_SETSTAT,
-            FSetStat => SSH_FXP_FSETSTAT,
-            OpenDir => SSH_FXP_OPENDIR,
-            ReadDir => SSH_FXP_READDIR,
-            Remove => SSH_FXP_REMOVE,
-            MkDir => SSH_FXP_MKDIR,
-            RmDir => SSH_FXP_RMDIR,
-            RealPath => SSH_FXP_REALPATH,
-            Stat => SSH_FXP_STAT,
-            Rename => SSH_FXP_RENAME,
-            ReadLink => SSH_FXP_READLINK,
-            Symlink => SSH_FXP_SYMLINK,
-            Status => SSH_FXP_STATUS,
-            Handle => SSH_FXP_HANDLE,
-            Data => SSH_FXP_DATA,
-            Name => SSH_FXP_NAME,
-            Attrs => SSH_FXP_ATTRS,
-            Extended => SSH_FXP_EXTENDED,
-            ExtendedReply => SSH_FXP_EXTENDED_REPLY,
-        );
-        serializer(packet, &mut bytes)?;
-
-        // Patch length (excludes the 4-byte length field itself)
-        let length = (bytes.len() - 4) as u32;
-        bytes[0..4].copy_from_slice(&length.to_be_bytes());
-
-        Ok(bytes.freeze())
+        let mut buf = BytesMut::new();
+        serialize_packet_into(packet, &mut buf)
     }
 }
 

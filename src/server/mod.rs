@@ -1,6 +1,5 @@
 mod handler;
 
-use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 pub use self::handler::Handler;
@@ -9,7 +8,7 @@ use bytes::BytesMut;
 
 use crate::{
     error::Error,
-    protocol::{Packet, StatusCode},
+    protocol::{serialize_packet_into, Packet, StatusCode},
     utils::read_packet_into,
 };
 
@@ -57,6 +56,7 @@ async fn process_handler<H, S>(
     stream: &mut S,
     handler: &mut H,
     read_buf: &mut BytesMut,
+    write_buf: &mut BytesMut,
 ) -> Result<(), Error>
 where
     H: Handler + Send,
@@ -69,7 +69,7 @@ where
         Err(_) => Packet::error(0, StatusCode::BadMessage),
     };
 
-    let packet = Bytes::try_from(response)?;
+    let packet = serialize_packet_into(response, write_buf)?;
     stream.write_all(&packet).await?;
     stream.flush().await?;
 
@@ -83,11 +83,12 @@ where
     H: Handler + Send + 'static,
 {
     tokio::spawn(async move {
-        // Reusable buffer for reading packets - avoids allocation per packet
+        // Reusable buffers for reading/writing packets - avoids allocation per packet
         let mut read_buf = BytesMut::with_capacity(32 * 1024);
+        let mut write_buf = BytesMut::with_capacity(32 * 1024);
 
         loop {
-            match process_handler(&mut stream, &mut handler, &mut read_buf).await {
+            match process_handler(&mut stream, &mut handler, &mut read_buf, &mut write_buf).await {
                 Err(Error::UnexpectedEof) => break,
                 Err(err) => warn!("{}", err),
                 Ok(_) => (),
