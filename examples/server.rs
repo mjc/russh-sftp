@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use log::{error, info, LevelFilter};
 use russh::keys::ssh_key::rand_core::OsRng;
 use russh::server::{Auth, Msg, Server as _, Session};
@@ -128,7 +129,7 @@ impl russh_sftp::server::Handler for SftpSession {
         Ok(Version::new())
     }
 
-    async fn close(&mut self, id: u32, _handle: String) -> Result<Status, Self::Error> {
+    async fn close(&mut self, id: u32, _handle: Bytes) -> Result<Status, Self::Error> {
         Ok(Status {
             id,
             status_code: StatusCode::Ok,
@@ -143,9 +144,10 @@ impl russh_sftp::server::Handler for SftpSession {
         Ok(Handle { id, handle: path })
     }
 
-    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
-        info!("readdir handle: {}", handle);
-        if handle == "/" && !self.root_dir_read_done {
+    async fn readdir(&mut self, id: u32, handle: Bytes) -> Result<Name, Self::Error> {
+        let handle_str = String::from_utf8_lossy(&handle);
+        info!("readdir handle: {}", handle_str);
+        if handle_str == "/" && !self.root_dir_read_done {
             self.root_dir_read_done = true;
             return Ok(Name {
                 id,

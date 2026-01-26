@@ -287,7 +287,7 @@ impl RawSftpSession {
                 Some(id),
                 Close {
                     id,
-                    handle: handle.into(),
+                    handle: Bytes::from(handle.into()),
                 }
                 .into(),
             )
@@ -329,7 +329,7 @@ impl RawSftpSession {
                 Some(id),
                 Read {
                     id,
-                    handle: handle.into(),
+                    handle: Bytes::from(handle.into()),
                     offset,
                     len,
                 }
@@ -361,7 +361,7 @@ impl RawSftpSession {
                 Some(id),
                 Write {
                     id,
-                    handle: handle.into(),
+                    handle: Bytes::from(handle.into()),
                     offset,
                     data: data.into(),
                 }
@@ -395,7 +395,7 @@ impl RawSftpSession {
                 Some(id),
                 Fstat {
                     id,
-                    handle: handle.into(),
+                    handle: Bytes::from(handle.into()),
                 }
                 .into(),
             )
@@ -436,7 +436,7 @@ impl RawSftpSession {
                 Some(id),
                 FSetStat {
                     id,
-                    handle: handle.into(),
+                    handle: Bytes::from(handle.into()),
                     attrs,
                 }
                 .into(),
@@ -482,7 +482,7 @@ impl RawSftpSession {
                 Some(id),
                 ReadDir {
                     id,
-                    handle: handle.into(),
+                    handle: Bytes::from(handle.into()),
                 }
                 .into(),
             )

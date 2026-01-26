@@ -8,7 +8,11 @@ use crate::error::Error;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Write {
     pub id: u32,
-    pub handle: String,
+    /// File handle (opaque bytes, use `handle_str()` for display).
+    /// Zero-copy from packet buffer.
+    #[serde(deserialize_with = "crate::de::bytes_deserialize")]
+    #[serde(serialize_with = "crate::ser::bytes_serialize")]
+    pub handle: Bytes,
     pub offset: u64,
     #[serde(deserialize_with = "crate::de::bytes_deserialize")]
     #[serde(serialize_with = "crate::ser::bytes_serialize")]
@@ -17,13 +21,18 @@ pub struct Write {
 
 impl Write {
     /// Zero-copy deserialization from Bytes.
-    /// This bypasses serde to avoid the Vec allocation in the data field.
+    /// This bypasses serde to avoid allocations.
     pub fn from_bytes(input: &mut Bytes) -> Result<Self, Error> {
         let id = input.try_get_u32().map_err(|e| Error::BadMessage(e.to_string()))?;
-        let handle = input.try_get_string()?;
+        let handle = input.try_get_bytes()?;
         let offset = input.try_get_u64().map_err(|e| Error::BadMessage(e.to_string()))?;
         let data = input.try_get_bytes()?;
         Ok(Write { id, handle, offset, data })
+    }
+
+    /// Get handle as string (lossy UTF-8 conversion for display/logging).
+    pub fn handle_str(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.handle)
     }
 }
 
@@ -39,7 +48,7 @@ mod tests {
     fn write_roundtrip() {
         let original = Write {
             id: 42,
-            handle: "test-handle".to_string(),
+            handle: Bytes::from_static(b"test-handle"),
             offset: 1024,
             data: Bytes::from_static(b"hello world"),
         };
@@ -61,7 +70,7 @@ mod tests {
     fn write_empty_data() {
         let original = Write {
             id: 1,
-            handle: "h".to_string(),
+            handle: Bytes::from_static(b"h"),
             offset: 0,
             data: Bytes::new(),
         };
@@ -78,7 +87,7 @@ mod tests {
         let large_data = vec![0xABu8; 32 * 1024]; // 32KB
         let original = Write {
             id: 999,
-            handle: "big-file".to_string(),
+            handle: Bytes::from_static(b"big-file"),
             offset: u64::MAX,
             data: Bytes::from(large_data.clone()),
         };

@@ -42,23 +42,25 @@ pub trait Handler: Sized {
     }
 
     /// Called on SSH_FXP_CLOSE.
-    /// The status can be returned as Ok or as Err
+    /// The status can be returned as Ok or as Err.
+    /// Handle is opaque bytes - use `String::from_utf8_lossy` if you need a string.
     #[allow(unused_variables)]
     fn close(
         &mut self,
         id: u32,
-        handle: String,
+        handle: Bytes,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_READ
+    /// Called on SSH_FXP_READ.
+    /// Handle is opaque bytes - use `String::from_utf8_lossy` if you need a string.
     #[allow(unused_variables)]
     fn read(
         &mut self,
         id: u32,
-        handle: String,
+        handle: Bytes,
         offset: u64,
         len: u32,
     ) -> impl Future<Output = Result<Data, Self::Error>> + Send {
@@ -66,12 +68,13 @@ pub trait Handler: Sized {
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_WRITE
+    /// Called on SSH_FXP_WRITE.
+    /// Handle is opaque bytes - use `String::from_utf8_lossy` if you need a string.
     #[allow(unused_variables)]
     fn write(
         &mut self,
         id: u32,
-        handle: String,
+        handle: Bytes,
         offset: u64,
         data: Bytes,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
@@ -90,12 +93,13 @@ pub trait Handler: Sized {
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_FSTAT
+    /// Called on SSH_FXP_FSTAT.
+    /// Handle is opaque bytes - use `String::from_utf8_lossy` if you need a string.
     #[allow(unused_variables)]
     fn fstat(
         &mut self,
         id: u32,
-        handle: String,
+        handle: Bytes,
     ) -> impl Future<Output = Result<Attrs, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
@@ -113,12 +117,13 @@ pub trait Handler: Sized {
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_FSETSTAT
+    /// Called on SSH_FXP_FSETSTAT.
+    /// Handle is opaque bytes - use `String::from_utf8_lossy` if you need a string.
     #[allow(unused_variables)]
     fn fsetstat(
         &mut self,
         id: u32,
-        handle: String,
+        handle: Bytes,
         attrs: FileAttributes,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
         let err = self.unimplemented();
@@ -137,12 +142,13 @@ pub trait Handler: Sized {
     }
 
     /// Called on SSH_FXP_READDIR.
-    /// EOF error should be returned at the end of reading the directory
+    /// EOF error should be returned at the end of reading the directory.
+    /// Handle is opaque bytes - use `String::from_utf8_lossy` if you need a string.
     #[allow(unused_variables)]
     fn readdir(
         &mut self,
         id: u32,
-        handle: String,
+        handle: Bytes,
     ) -> impl Future<Output = Result<Name, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }

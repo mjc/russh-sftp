@@ -205,16 +205,17 @@ impl TryFrom<&mut Bytes> for Packet {
             SSH_FXP_INIT => Self::Init(de::from_bytes(bytes)?),
             SSH_FXP_VERSION => Self::Version(de::from_bytes(bytes)?),
             SSH_FXP_OPEN => Self::Open(de::from_bytes(bytes)?),
-            SSH_FXP_CLOSE => Self::Close(de::from_bytes(bytes)?),
-            SSH_FXP_READ => Self::Read(de::from_bytes(bytes)?),
+            SSH_FXP_CLOSE => Self::Close(Close::from_bytes(bytes)?),
+            // Manual deserialization for consistency with Write/Data
+            SSH_FXP_READ => Self::Read(Read::from_bytes(bytes)?),
             // Zero-copy deserialization - bypasses serde to avoid Vec allocation
             SSH_FXP_WRITE => Self::Write(Write::from_bytes(bytes)?),
             SSH_FXP_LSTAT => Self::Lstat(de::from_bytes(bytes)?),
-            SSH_FXP_FSTAT => Self::Fstat(de::from_bytes(bytes)?),
+            SSH_FXP_FSTAT => Self::Fstat(Fstat::from_bytes(bytes)?),
             SSH_FXP_SETSTAT => Self::SetStat(de::from_bytes(bytes)?),
             SSH_FXP_FSETSTAT => Self::FSetStat(de::from_bytes(bytes)?),
             SSH_FXP_OPENDIR => Self::OpenDir(de::from_bytes(bytes)?),
-            SSH_FXP_READDIR => Self::ReadDir(de::from_bytes(bytes)?),
+            SSH_FXP_READDIR => Self::ReadDir(ReadDir::from_bytes(bytes)?),
             SSH_FXP_REMOVE => Self::Remove(de::from_bytes(bytes)?),
             SSH_FXP_MKDIR => Self::MkDir(de::from_bytes(bytes)?),
             SSH_FXP_RMDIR => Self::RmDir(de::from_bytes(bytes)?),
@@ -315,7 +316,7 @@ mod tests {
     fn packet_write_roundtrip() {
         let original = Write {
             id: 42,
-            handle: "test-handle".to_string(),
+            handle: Bytes::from_static(b"test-handle"),
             offset: 1024,
             data: Bytes::from_static(b"hello world"),
         };
@@ -329,7 +330,7 @@ mod tests {
 
         if let Packet::Write(write) = packet {
             assert_eq!(write.id, 42);
-            assert_eq!(write.handle, "test-handle");
+            assert_eq!(write.handle.as_ref(), b"test-handle");
             assert_eq!(write.offset, 1024);
             assert_eq!(write.data.as_ref(), b"hello world");
         } else {
@@ -362,7 +363,7 @@ mod tests {
         let large_data = vec![0xABu8; 64 * 1024]; // 64KB
         let original = Write {
             id: 1,
-            handle: "big".to_string(),
+            handle: Bytes::from_static(b"big"),
             offset: 0,
             data: Bytes::from(large_data.clone()),
         };
