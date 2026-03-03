@@ -8,7 +8,7 @@ use bytes::BytesMut;
 
 use crate::{
     error::Error,
-    protocol::{serialize_packet_into, Packet, StatusCode},
+    protocol::{serialize_packet_split, Packet, StatusCode},
     utils::read_packet_into,
 };
 
@@ -69,8 +69,8 @@ where
         Err(_) => Packet::error(0, StatusCode::BadMessage),
     };
 
-    let packet = serialize_packet_into(response, write_buf)?;
-    stream.write_all(&packet).await?;
+    let packet = serialize_packet_split(response, write_buf)?;
+    packet.write_to(stream).await?;
     stream.flush().await?;
 
     Ok(())

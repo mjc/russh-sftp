@@ -255,6 +255,74 @@ macro_rules! serialize_packet {
     };
 }
 
+/// A serialized packet that may consist of a header and a separate data payload.
+/// This enables zero-copy serialization for Data packets: the payload bytes are
+/// kept as-is rather than being copied into the header buffer.
+pub enum SerializedPacket {
+    /// A single contiguous packet (most packet types).
+    Contiguous(Bytes),
+    /// A header + separate data payload (Data packets on the download path).
+    /// The header contains [length:4][type:1][id:4][data_len:4] and the
+    /// payload is the original Bytes without copying.
+    Split { header: Bytes, data: Bytes },
+}
+
+impl SerializedPacket {
+    /// Total wire length (for diagnostics / testing).
+    pub fn wire_len(&self) -> usize {
+        match self {
+            Self::Contiguous(b) => b.len(),
+            Self::Split { header, data } => header.len() + data.len(),
+        }
+    }
+
+    /// Write to an AsyncWrite stream. Uses two writes for Split packets
+    /// to avoid copying the data payload into the header buffer.
+    pub async fn write_to<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        stream: &mut W,
+    ) -> Result<(), std::io::Error> {
+        use tokio::io::AsyncWriteExt;
+        match self {
+            Self::Contiguous(b) => {
+                stream.write_all(b).await?;
+            }
+            Self::Split { header, data } => {
+                stream.write_all(header).await?;
+                stream.write_all(data).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Serialize a packet, splitting Data packets to avoid copying the payload.
+/// For Data packets, returns `Split { header, data }` where the data bytes
+/// are passed through without copying. For all other packets, returns
+/// `Contiguous(bytes)` using the provided buffer.
+pub fn serialize_packet_split(packet: Packet, buf: &mut BytesMut) -> Result<SerializedPacket, Error> {
+    // Fast path: Data packets get zero-copy treatment
+    if let Packet::Data(data) = packet {
+        // Header layout: [total_len:4][SSH_FXP_DATA:1][id:4][data_len:4] = 13 bytes
+        // total_len = 1 + 4 + 4 + data.data.len() (excludes the 4-byte length field)
+        let total_len = (1 + 4 + 4 + data.data.len()) as u32;
+        buf.clear();
+        buf.reserve(13);
+        buf.put_u32(total_len);
+        buf.put_u8(SSH_FXP_DATA);
+        buf.put_u32(data.id);
+        buf.put_u32(data.data.len() as u32);
+        return Ok(SerializedPacket::Split {
+            header: buf.split().freeze(),
+            data: data.data,
+        });
+    }
+
+    // Normal path: serialize into contiguous buffer
+    let bytes = serialize_packet_into(packet, buf)?;
+    Ok(SerializedPacket::Contiguous(bytes))
+}
+
 /// Serialize a packet into an existing buffer, returning the bytes.
 /// Clears the buffer first but reuses its capacity to avoid allocation.
 pub fn serialize_packet_into(packet: Packet, buf: &mut BytesMut) -> Result<Bytes, Error> {
@@ -389,5 +457,63 @@ mod tests {
         } else {
             panic!("Expected Write packet");
         }
+    }
+
+    #[test]
+    fn serialize_packet_split_data_matches_contiguous() {
+        // Verify that split serialization produces identical wire bytes
+        let payload = vec![0xCAu8; 32 * 1024]; // 32KB payload
+
+        // Contiguous path
+        let mut buf1 = BytesMut::new();
+        let contiguous = serialize_packet_into(
+            Packet::Data(Data { id: 42, data: Bytes::from(payload.clone()) }),
+            &mut buf1,
+        )
+        .expect("contiguous serialize failed");
+
+        // Split path
+        let mut buf2 = BytesMut::new();
+        let split = serialize_packet_split(
+            Packet::Data(Data { id: 42, data: Bytes::from(payload) }),
+            &mut buf2,
+        )
+        .expect("split serialize failed");
+
+        // Reassemble the split version
+        let reassembled = match split {
+            SerializedPacket::Split { header, data } => {
+                let mut combined = BytesMut::with_capacity(header.len() + data.len());
+                combined.extend_from_slice(&header);
+                combined.extend_from_slice(&data);
+                combined.freeze()
+            }
+            SerializedPacket::Contiguous(b) => b,
+        };
+
+        assert_eq!(contiguous, reassembled, "split and contiguous must produce identical wire bytes");
+    }
+
+    #[test]
+    fn serialize_packet_split_non_data_is_contiguous() {
+        // Non-Data packets should always produce Contiguous
+        let original = Write {
+            id: 7,
+            handle: Bytes::from_static(b"handle"),
+            offset: 512,
+            data: Bytes::from_static(b"payload"),
+        };
+
+        let mut buf = BytesMut::new();
+        let result = serialize_packet_split(
+            Packet::Write(original),
+            &mut buf,
+        )
+        .expect("split serialize failed");
+
+        assert!(
+            matches!(result, SerializedPacket::Contiguous(_)),
+            "non-Data packets should produce Contiguous"
+        );
     }
 }
