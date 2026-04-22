@@ -91,7 +91,7 @@ impl russh::server::Handler for SshSession {
             let channel = self.get_channel(channel_id).await;
             let sftp = SftpSession::default();
             session.channel_success(channel_id)?;
-            russh_sftp::server::run_bytes(channel.into_stream(), sftp).await;
+            russh_sftp::server::run(channel.into_stream(), sftp).await;
         } else {
             session.channel_failure(channel_id)?;
         }
@@ -107,7 +107,7 @@ struct SftpSession {
     files: HashMap<String, Vec<u8>>,
 }
 
-impl russh_sftp::server::Handler<Bytes, Bytes> for SftpSession {
+impl russh_sftp::server::Handler for SftpSession {
     type Error = StatusCode;
 
     fn unimplemented(&self) -> Self::Error {

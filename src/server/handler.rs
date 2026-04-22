@@ -1,22 +1,24 @@
 use std::{collections::HashMap, future::Future};
 
+use bytes::Bytes;
+
 use crate::protocol::{
-    Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, Version,
+    Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusCode, Version,
 };
-use crate::server::StatusReply;
 
 /// Server handler for each client. This is `async_trait`.
 ///
-/// For backwards compatibility, the default handler shape receives handles as
-/// `String` and write payloads as `Vec<u8>`. Implement `Handler<bytes::Bytes,
-/// bytes::Bytes>` and pass it to [`crate::server::run_bytes`] to preserve
-/// opaque handles and write payloads as bytes.
+/// The default handler shape receives opaque handles and write payloads as
+/// [`bytes::Bytes`] so the server hot path can preserve the packet buffers.
+/// The type parameters remain available for adapter code that wants to name an
+/// older string/vector shape, but [`crate::server::run`] uses the default
+/// byte-preserving handler shape.
 #[cfg_attr(feature = "async-trait", async_trait::async_trait)]
-pub trait Handler<HandleT = String, WriteDataT = Vec<u8>>: Sized {
-    /// The type must have an `Into<StatusReply>`
+pub trait Handler<HandleT = Bytes, WriteDataT = Bytes>: Sized {
+    /// The type must have an `Into<StatusCode>`
     /// implementation because a response must be sent
     /// to any request, even if completed by error.
-    type Error: Into<StatusReply> + Send;
+    type Error: Into<StatusCode> + Send;
 
     /// Called by the handler when the packet is not implemented.
     fn unimplemented(&self) -> Self::Error;
