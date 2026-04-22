@@ -8,7 +8,7 @@ pub use handler::Handler;
 pub use rawsession::RawSftpSession;
 pub use session::SftpSession;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use tokio::{
     io::{self, AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
@@ -16,7 +16,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{error::Error, protocol::Packet, utils::read_packet};
+use crate::{error::Error, protocol::Packet, utils::read_packet_into_buf};
 
 macro_rules! into_wrap {
     ($handler:expr) => {
@@ -27,10 +27,10 @@ macro_rules! into_wrap {
     };
 }
 
-async fn execute_handler<H>(bytes: &mut Bytes, handler: &mut H) -> Result<(), error::Error>
-where
-    H: Handler + Send,
-{
+async fn execute_handler(
+    bytes: &mut BytesMut,
+    handler: &mut impl Handler,
+) -> Result<(), error::Error> {
     match Packet::try_from(bytes)? {
         Packet::Version(p) => into_wrap!(handler.version(p)),
         Packet::Status(p) => into_wrap!(handler.status(p)),
@@ -45,13 +45,17 @@ where
     }
 }
 
-async fn process_handler<S, H>(stream: &mut S, handler: &mut H) -> Result<(), Error>
+async fn process_handler<S, H>(
+    stream: &mut S,
+    handler: &mut H,
+    read_buf: &mut BytesMut,
+) -> Result<(), Error>
 where
     S: AsyncRead + Unpin,
     H: Handler + Send,
 {
-    let mut bytes = read_packet(stream).await?;
-    Ok(execute_handler(&mut bytes, handler).await?)
+    let mut packet_buf = read_packet_into_buf(stream, read_buf).await?;
+    Ok(execute_handler(packet_buf.as_mut_bytes(), handler).await?)
 }
 
 /// Run processing stream as SFTP client. Is a simple handler of incoming
@@ -68,9 +72,10 @@ where
     let wc = rc.clone();
     {
         tokio::spawn(async move {
+            let mut read_buf = BytesMut::with_capacity(32 * 1024);
             loop {
                 select! {
-                    result = process_handler(&mut rd, &mut handler) => {
+                    result = process_handler(&mut rd, &mut handler, &mut read_buf) => {
                         match result {
                             Err(Error::UnexpectedEof) => break,
                             Err(err) => warn!("{}", err),

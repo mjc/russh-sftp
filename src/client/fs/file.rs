@@ -5,6 +5,8 @@ use std::{
     sync::Arc,
     task::{ready, Context, Poll},
 };
+
+use bytes::Bytes;
 use tokio::{
     io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf},
     runtime::Handle,
@@ -22,7 +24,7 @@ const MAX_READ_LENGTH: u64 = 261120;
 const MAX_WRITE_LENGTH: u64 = 261120;
 
 struct FileState {
-    f_read: StateFn<Option<Vec<u8>>>,
+    f_read: StateFn<Option<Bytes>>,
     f_seek: StateFn<u64>,
     f_write: StateFn<usize>,
     f_flush: StateFn<()>,
@@ -39,7 +41,7 @@ struct FileState {
 /// request the actual file size from the remote server.
 pub struct File {
     session: Arc<RawSftpSession>,
-    handle: String,
+    handle: Bytes,
     state: FileState,
     pos: u64,
     closed: bool,
@@ -49,7 +51,7 @@ pub struct File {
 impl File {
     pub(crate) fn new(
         session: Arc<RawSftpSession>,
-        handle: String,
+        handle: Bytes,
         extensions: Arc<Extensions>,
     ) -> Self {
         Self {
@@ -70,13 +72,13 @@ impl File {
 
     /// Queries metadata about the remote file.
     pub async fn metadata(&self) -> SftpResult<Metadata> {
-        Ok(self.session.fstat(self.handle.as_str()).await?.attrs)
+        Ok(self.session.fstat_bytes(self.handle.clone()).await?.attrs)
     }
 
     /// Sets metadata for a remote file.
     pub async fn set_metadata(&self, metadata: Metadata) -> SftpResult<()> {
         self.session
-            .fsetstat(self.handle.as_str(), metadata)
+            .fsetstat_bytes(self.handle.clone(), metadata)
             .await
             .map(|_| ())
     }
@@ -90,7 +92,10 @@ impl File {
             return Ok(());
         }
 
-        self.session.fsync(self.handle.as_str()).await.map(|_| ())
+        self.session
+            .fsync_bytes(self.handle.clone())
+            .await
+            .map(|_| ())
     }
 }
 
@@ -105,7 +110,7 @@ impl Drop for File {
             let file_handle = self.handle.clone();
 
             handle.spawn(async move {
-                let _ = session.close(file_handle).await;
+                let _ = session.close_bytes(file_handle).await;
             });
         }
     }
@@ -138,14 +143,14 @@ impl AsyncRead for File {
                 };
 
                 self.state.f_read.get_or_insert(Box::pin(async move {
-                    let result = session.read(file_handle, offset, len as u32).await;
+                    let result = session.read_bytes(file_handle, offset, len as u32).await;
 
                     match result {
                         Ok(data) => Ok(Some(data.data)),
                         Err(Error::Status(status)) if status.status_code == StatusCode::Eof => {
                             Ok(None)
                         }
-                        Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
+                        Err(e) => Err(io::Error::other(e.to_string())),
                     }
                 }))
             }
@@ -172,8 +177,7 @@ impl AsyncRead for File {
 impl AsyncSeek for File {
     fn start_seek(mut self: Pin<&mut Self>, position: io::SeekFrom) -> io::Result<()> {
         match self.state.f_seek {
-            Some(_) => Err(io::Error::new(
-                io::ErrorKind::Other,
+            Some(_) => Err(io::Error::other(
                 "other file operation is pending, call poll_complete before start_seek",
             )),
             None => {
@@ -187,25 +191,19 @@ impl AsyncSeek for File {
                         SeekFrom::Current(pos) => cur_pos + pos,
                         SeekFrom::End(pos) => {
                             let result = session
-                                .fstat(file_handle)
+                                .fstat_bytes(file_handle)
                                 .await
-                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                                .map_err(|e| io::Error::other(e.to_string()))?;
 
                             match result.attrs.size {
                                 Some(size) => size as i64 + pos,
-                                None => {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::Other,
-                                        "file size unknown",
-                                    ))
-                                }
+                                None => return Err(io::Error::other("file size unknown")),
                             }
                         }
                     };
 
                     if new_pos < 0 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
+                        return Err(io::Error::other(
                             "cannot move file pointer before the beginning",
                         ));
                     }
@@ -248,20 +246,15 @@ impl AsyncWrite for File {
                     .unwrap_or(MAX_WRITE_LENGTH) as usize;
 
                 let file_handle = self.handle.clone();
-                let data = buf.to_vec();
-
                 let offset = self.pos;
-                let len = if data.len() > max_write_len {
-                    max_write_len
-                } else {
-                    data.len()
-                };
+                let len = buf.len().min(max_write_len);
+                let data = buf[..len].to_vec();
 
                 self.state.f_write.get_or_insert(Box::pin(async move {
                     session
-                        .write(file_handle, offset, data[..len].to_vec())
+                        .write_bytes(file_handle, offset, data.into())
                         .await
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                        .map_err(|e| io::Error::other(e.to_string()))?;
                     Ok(len)
                 }))
             }
@@ -292,10 +285,10 @@ impl AsyncWrite for File {
 
                 self.state.f_flush.get_or_insert(Box::pin(async move {
                     session
-                        .fsync(file_handle)
+                        .fsync_bytes(file_handle)
                         .await
                         .map(|_| ())
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                        .map_err(|e| io::Error::other(e.to_string()))
                 }))
             }
         })
@@ -320,9 +313,9 @@ impl AsyncWrite for File {
 
                 self.state.f_shutdown.get_or_insert(Box::pin(async move {
                     session
-                        .close(file_handle)
+                        .close_bytes(file_handle)
                         .await
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                        .map_err(|e| io::Error::other(e.to_string()))?;
                     Ok(())
                 }))
             }

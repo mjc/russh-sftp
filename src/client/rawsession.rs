@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use flurry::HashMap;
 use std::{
+    future::Future,
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
         Arc,
@@ -59,39 +60,44 @@ impl SessionInner {
     }
 }
 
-#[cfg_attr(feature = "async-trait", async_trait::async_trait)]
+#[allow(clippy::manual_async_fn)]
 impl Handler for SessionInner {
     type Error = Error;
 
-    async fn version(&mut self, packet: Version) -> Result<(), Self::Error> {
-        let version = packet.version;
-        self.reply(None, packet.into()).await?;
-        self.version = Some(version);
-        Ok(())
+    fn version(&mut self, packet: Version) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async move {
+            let version = packet.version;
+            self.reply(None, packet.into()).await?;
+            self.version = Some(version);
+            Ok(())
+        }
     }
 
-    async fn name(&mut self, name: Name) -> Result<(), Self::Error> {
-        self.reply(Some(name.id), name.into()).await
+    fn name(&mut self, name: Name) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async move { self.reply(Some(name.id), name.into()).await }
     }
 
-    async fn status(&mut self, status: Status) -> Result<(), Self::Error> {
-        self.reply(Some(status.id), status.into()).await
+    fn status(&mut self, status: Status) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async move { self.reply(Some(status.id), status.into()).await }
     }
 
-    async fn handle(&mut self, handle: Handle) -> Result<(), Self::Error> {
-        self.reply(Some(handle.id), handle.into()).await
+    fn handle(&mut self, handle: Handle) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async move { self.reply(Some(handle.id), handle.into()).await }
     }
 
-    async fn data(&mut self, data: Data) -> Result<(), Self::Error> {
-        self.reply(Some(data.id), data.into()).await
+    fn data(&mut self, data: Data) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async move { self.reply(Some(data.id), data.into()).await }
     }
 
-    async fn attrs(&mut self, attrs: Attrs) -> Result<(), Self::Error> {
-        self.reply(Some(attrs.id), attrs.into()).await
+    fn attrs(&mut self, attrs: Attrs) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async move { self.reply(Some(attrs.id), attrs.into()).await }
     }
 
-    async fn extended_reply(&mut self, reply: ExtendedReply) -> Result<(), Self::Error> {
-        self.reply(Some(reply.id), reply.into()).await
+    fn extended_reply(
+        &mut self,
+        reply: ExtendedReply,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async move { self.reply(Some(reply.id), reply.into()).await }
     }
 }
 
@@ -202,10 +208,14 @@ impl RawSftpSession {
             return Err(Error::UnexpectedBehavior("session closed".into()));
         }
 
+        let bytes = Bytes::try_from(packet)?;
         let (tx, mut rx) = mpsc::channel(1);
 
         self.requests.pin().insert(id, tx);
-        self.tx.send(Bytes::try_from(packet)?)?;
+        if let Err(err) = self.tx.send(bytes) {
+            self.requests.pin().remove(&id);
+            return Err(err.into());
+        }
 
         let timeout = *self.options.timeout.read().await;
 
@@ -281,17 +291,12 @@ impl RawSftpSession {
     }
 
     pub async fn close<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
+        self.close_bytes(Bytes::from(handle.into())).await
+    }
+
+    pub async fn close_bytes(&self, handle: Bytes) -> SftpResult<Status> {
         let id = self.use_next_id();
-        let result = self
-            .send(
-                Some(id),
-                Close {
-                    id,
-                    handle: handle.into(),
-                }
-                .into(),
-            )
-            .await?;
+        let result = self.send(Some(id), Close { id, handle }.into()).await?;
 
         if let Packet::Status(status) = &result {
             if status.status_code == StatusCode::Ok
@@ -319,6 +324,11 @@ impl RawSftpSession {
         offset: u64,
         len: u32,
     ) -> SftpResult<Data> {
+        self.read_bytes(Bytes::from(handle.into()), offset, len)
+            .await
+    }
+
+    pub async fn read_bytes(&self, handle: Bytes, offset: u64, len: u32) -> SftpResult<Data> {
         if self.options.limits.read_len.is_some_and(|r| len as u64 > r) {
             return Err(Error::Limited("read limit reached".to_owned()));
         }
@@ -329,7 +339,7 @@ impl RawSftpSession {
                 Some(id),
                 Read {
                     id,
-                    handle: handle.into(),
+                    handle,
                     offset,
                     len,
                 }
@@ -346,6 +356,11 @@ impl RawSftpSession {
         offset: u64,
         data: Vec<u8>,
     ) -> SftpResult<Status> {
+        self.write_bytes(Bytes::from(handle.into()), offset, data.into())
+            .await
+    }
+
+    pub async fn write_bytes(&self, handle: Bytes, offset: u64, data: Bytes) -> SftpResult<Status> {
         if self
             .options
             .limits
@@ -361,7 +376,7 @@ impl RawSftpSession {
                 Some(id),
                 Write {
                     id,
-                    handle: handle.into(),
+                    handle,
                     offset,
                     data,
                 }
@@ -389,17 +404,12 @@ impl RawSftpSession {
     }
 
     pub async fn fstat<H: Into<String>>(&self, handle: H) -> SftpResult<Attrs> {
+        self.fstat_bytes(Bytes::from(handle.into())).await
+    }
+
+    pub async fn fstat_bytes(&self, handle: Bytes) -> SftpResult<Attrs> {
         let id = self.use_next_id();
-        let result = self
-            .send(
-                Some(id),
-                Fstat {
-                    id,
-                    handle: handle.into(),
-                }
-                .into(),
-            )
-            .await?;
+        let result = self.send(Some(id), Fstat { id, handle }.into()).await?;
 
         into_with_status!(result, Attrs)
     }
@@ -430,17 +440,13 @@ impl RawSftpSession {
         handle: H,
         attrs: FileAttributes,
     ) -> SftpResult<Status> {
+        self.fsetstat_bytes(Bytes::from(handle.into()), attrs).await
+    }
+
+    pub async fn fsetstat_bytes(&self, handle: Bytes, attrs: FileAttributes) -> SftpResult<Status> {
         let id = self.use_next_id();
         let result = self
-            .send(
-                Some(id),
-                FSetStat {
-                    id,
-                    handle: handle.into(),
-                    attrs,
-                }
-                .into(),
-            )
+            .send(Some(id), FSetStat { id, handle, attrs }.into())
             .await?;
 
         into_status!(result)
@@ -476,17 +482,12 @@ impl RawSftpSession {
     }
 
     pub async fn readdir<H: Into<String>>(&self, handle: H) -> SftpResult<Name> {
+        self.readdir_bytes(Bytes::from(handle.into())).await
+    }
+
+    pub async fn readdir_bytes(&self, handle: Bytes) -> SftpResult<Name> {
         let id = self.use_next_id();
-        let result = self
-            .send(
-                Some(id),
-                ReadDir {
-                    id,
-                    handle: handle.into(),
-                }
-                .into(),
-            )
-            .await?;
+        let result = self.send(Some(id), ReadDir { id, handle }.into()).await?;
 
         into_with_status!(result, Name)
     }
@@ -682,14 +683,12 @@ impl RawSftpSession {
     }
 
     pub async fn fsync<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
+        self.fsync_bytes(Bytes::from(handle.into())).await
+    }
+
+    pub async fn fsync_bytes(&self, handle: Bytes) -> SftpResult<Status> {
         let result = self
-            .extended(
-                extensions::FSYNC,
-                FsyncExtension {
-                    handle: handle.into(),
-                }
-                .try_into()?,
-            )
+            .extended(extensions::FSYNC, FsyncExtension { handle }.try_into()?)
             .await?;
 
         into_status!(result)
