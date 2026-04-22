@@ -1,35 +1,34 @@
 use std::{
-    collections::VecDeque,
-    future::{self, Future},
+    future::Future,
     io::{self, SeekFrom},
     pin::Pin,
     sync::Arc,
     task::{ready, Context, Poll},
 };
+
+use bytes::Bytes;
 use tokio::{
     io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf},
-    sync::oneshot,
+    runtime::Handle,
 };
 
 use super::Metadata;
 use crate::{
-    client::{error::Error, rawsession::SftpResult, session::Features, RawSftpSession},
-    protocol::{Packet, StatusCode},
+    client::{error::Error, rawsession::SftpResult, session::Extensions, RawSftpSession},
+    protocol::StatusCode,
 };
 
 type StateFn<T> = Option<Pin<Box<dyn Future<Output = io::Result<T>> + Send + Sync + 'static>>>;
 
-// read packet overhead: type(1) + id(4) + data_len(4)
-const READ_OVERHEAD_LENGTH: u32 = 9;
-// write packet overhead excluding handle: type(1) + id(4) + handle_len(4) + offset(8) + data_len(4)
-const WRITE_OVERHEAD_LENGTH: u32 = 21;
+const MAX_READ_LENGTH: u64 = 261120;
+const MAX_WRITE_LENGTH: u64 = 261120;
 
 struct FileState {
-    f_read: StateFn<Option<Vec<u8>>>,
+    f_read: StateFn<Option<Bytes>>,
     f_seek: StateFn<u64>,
+    f_write: StateFn<usize>,
     f_flush: StateFn<()>,
     f_shutdown: StateFn<()>,
-    write_acks: VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
 }
 
 /// Provides high-level methods for interaction with a remote file.
@@ -42,40 +41,44 @@ struct FileState {
 /// request the actual file size from the remote server.
 pub struct File {
     session: Arc<RawSftpSession>,
-    handle: String,
+    handle: Bytes,
     state: FileState,
     pos: u64,
     closed: bool,
-    features: Features,
+    extensions: Arc<Extensions>,
 }
 
 impl File {
-    pub(crate) fn new(session: Arc<RawSftpSession>, handle: String, features: Features) -> Self {
+    pub(crate) fn new(
+        session: Arc<RawSftpSession>,
+        handle: Bytes,
+        extensions: Arc<Extensions>,
+    ) -> Self {
         Self {
             session,
             handle,
             state: FileState {
                 f_read: None,
                 f_seek: None,
+                f_write: None,
                 f_flush: None,
                 f_shutdown: None,
-                write_acks: VecDeque::with_capacity(features.max_concurrent_writes),
             },
             pos: 0,
             closed: false,
-            features,
+            extensions,
         }
     }
 
     /// Queries metadata about the remote file.
     pub async fn metadata(&self) -> SftpResult<Metadata> {
-        Ok(self.session.fstat(self.handle.as_str()).await?.attrs)
+        Ok(self.session.fstat_bytes(self.handle.clone()).await?.attrs)
     }
 
     /// Sets metadata for a remote file.
     pub async fn set_metadata(&self, metadata: Metadata) -> SftpResult<()> {
         self.session
-            .fsetstat(self.handle.as_str(), metadata)
+            .fsetstat_bytes(self.handle.clone(), metadata)
             .await
             .map(|_| ())
     }
@@ -85,51 +88,15 @@ impl File {
     /// If the server does not support `fsync@openssh.com` sending the request will
     /// be omitted, but will still pseudo-successfully
     pub async fn sync_all(&self) -> SftpResult<()> {
-        if !self.features.fsync {
+        if !self.extensions.fsync {
             return Ok(());
         }
 
-        self.session.fsync(self.handle.as_str()).await.map(|_| ())
+        self.session
+            .fsync_bytes(self.handle.clone())
+            .await
+            .map(|_| ())
     }
-}
-
-fn check_write_result(
-    result: Result<SftpResult<Packet>, oneshot::error::RecvError>,
-) -> io::Result<()> {
-    match result {
-        Err(_) => Err(io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "write channel closed",
-        )),
-        Ok(Ok(Packet::Status(s))) if s.status_code == StatusCode::Ok => Ok(()),
-        Ok(Ok(Packet::Status(s))) => Err(io::Error::other(s.error_message)),
-        Ok(Ok(_)) => Err(io::Error::other("unexpected response packet")),
-        Ok(Err(e)) => Err(io::Error::other(e.to_string())),
-    }
-}
-
-fn poll_oldest_write(
-    pending: &mut VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
-    cx: &mut Context<'_>,
-) -> Option<Poll<io::Result<()>>> {
-    let rx = pending.front_mut()?;
-    Some(match Pin::new(rx).poll(cx) {
-        Poll::Pending => Poll::Pending,
-        Poll::Ready(r) => {
-            pending.pop_front();
-            Poll::Ready(check_write_result(r))
-        }
-    })
-}
-
-fn poll_drain_writes(
-    pending: &mut VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
-    cx: &mut Context<'_>,
-) -> Poll<io::Result<()>> {
-    while let Some(poll) = poll_oldest_write(pending, cx) {
-        ready!(poll)?;
-    }
-    Poll::Ready(Ok(()))
 }
 
 impl Drop for File {
@@ -138,7 +105,14 @@ impl Drop for File {
             return;
         }
 
-        let _ = self.session.close_nowait(std::mem::take(&mut self.handle));
+        if let Ok(handle) = Handle::try_current() {
+            let session = self.session.clone();
+            let file_handle = self.handle.clone();
+
+            handle.spawn(async move {
+                let _ = session.close_bytes(file_handle).await;
+            });
+        }
     }
 }
 
@@ -153,22 +127,24 @@ impl AsyncRead for File {
             None => {
                 let session = self.session.clone();
                 let max_read_len = self
-                    .features
+                    .extensions
                     .limits
+                    .as_ref()
                     .and_then(|l| l.read_len)
-                    .unwrap_or_else(|| {
-                        self.features
-                            .max_packet_len
-                            .saturating_sub(READ_OVERHEAD_LENGTH) as u64
-                    }) as usize;
+                    .unwrap_or(MAX_READ_LENGTH) as usize;
 
                 let file_handle = self.handle.clone();
 
                 let offset = self.pos;
-                let len = usize::min(buf.remaining(), max_read_len);
+                let len = if buf.remaining() > max_read_len {
+                    max_read_len
+                } else {
+                    buf.remaining()
+                };
 
                 self.state.f_read.get_or_insert(Box::pin(async move {
-                    let result = session.read(file_handle, offset, len as u32).await;
+                    let result = session.read_bytes(file_handle, offset, len as u32).await;
+
                     match result {
                         Ok(data) => Ok(Some(data.data)),
                         Err(Error::Status(status)) if status.status_code == StatusCode::Eof => {
@@ -200,49 +176,44 @@ impl AsyncRead for File {
 
 impl AsyncSeek for File {
     fn start_seek(mut self: Pin<&mut Self>, position: io::SeekFrom) -> io::Result<()> {
-        if self.state.f_seek.is_some() {
-            return Err(io::Error::other(
+        match self.state.f_seek {
+            Some(_) => Err(io::Error::other(
                 "other file operation is pending, call poll_complete before start_seek",
-            ));
-        }
-
-        self.state.f_seek = Some(match position {
-            SeekFrom::Start(pos) => Box::pin(future::ready(Ok(pos))),
-            SeekFrom::Current(pos) => {
-                let new_pos = self.pos as i64 + pos;
-                if new_pos < 0 {
-                    return Err(io::Error::other(
-                        "cannot move file pointer before the beginning",
-                    ));
-                }
-                Box::pin(future::ready(Ok(new_pos as u64)))
-            }
-            SeekFrom::End(pos) => {
+            )),
+            None => {
                 let session = self.session.clone();
                 let file_handle = self.handle.clone();
+                let cur_pos = self.pos as i64;
 
-                Box::pin(async move {
-                    let result = session
-                        .fstat(file_handle)
-                        .await
-                        .map_err(|e| io::Error::other(e.to_string()))?;
-                    match result.attrs.size {
-                        Some(size) => {
-                            let new_pos = size as i64 + pos;
-                            if new_pos < 0 {
-                                return Err(io::Error::other(
-                                    "cannot move file pointer before the beginning",
-                                ));
+                self.state.f_seek = Some(Box::pin(async move {
+                    let new_pos = match position {
+                        SeekFrom::Start(pos) => pos as i64,
+                        SeekFrom::Current(pos) => cur_pos + pos,
+                        SeekFrom::End(pos) => {
+                            let result = session
+                                .fstat_bytes(file_handle)
+                                .await
+                                .map_err(|e| io::Error::other(e.to_string()))?;
+
+                            match result.attrs.size {
+                                Some(size) => size as i64 + pos,
+                                None => return Err(io::Error::other("file size unknown")),
                             }
-                            Ok(new_pos as u64)
                         }
-                        None => Err(io::Error::other("file size unknown")),
-                    }
-                })
-            }
-        });
+                    };
 
-        Ok(())
+                    if new_pos < 0 {
+                        return Err(io::Error::other(
+                            "cannot move file pointer before the beginning",
+                        ));
+                    }
+
+                    Ok(new_pos as u64)
+                }));
+
+                Ok(())
+            }
+        }
     }
 
     fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
@@ -263,40 +234,46 @@ impl AsyncWrite for File {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        if self.state.write_acks.len() >= self.features.max_concurrent_writes {
-            if let Some(poll) = poll_oldest_write(&mut self.state.write_acks, cx) {
-                ready!(poll)?;
+        let poll = Pin::new(match self.state.f_write.as_mut() {
+            Some(f) => f,
+            None => {
+                let session = self.session.clone();
+                let max_write_len = self
+                    .extensions
+                    .limits
+                    .as_ref()
+                    .and_then(|l| l.write_len)
+                    .unwrap_or(MAX_WRITE_LENGTH) as usize;
+
+                let file_handle = self.handle.clone();
+                let offset = self.pos;
+                let len = buf.len().min(max_write_len);
+                let data = buf[..len].to_vec();
+
+                self.state.f_write.get_or_insert(Box::pin(async move {
+                    session
+                        .write_bytes(file_handle, offset, data.into())
+                        .await
+                        .map_err(|e| io::Error::other(e.to_string()))?;
+                    Ok(len)
+                }))
             }
+        })
+        .poll(cx);
+
+        if poll.is_ready() {
+            self.state.f_write = None;
         }
 
-        let max_write_len = self
-            .features
-            .limits
-            .and_then(|l| l.write_len)
-            .unwrap_or_else(|| {
-                let overhead = WRITE_OVERHEAD_LENGTH + self.handle.len() as u32;
-                self.features.max_packet_len.saturating_sub(overhead) as u64
-            }) as usize;
-
-        let len = usize::min(buf.len(), max_write_len);
-        let data = buf[..len].to_vec();
-        let handle = self.handle.clone();
-        let offset = self.pos;
-
-        match self.session.write_nowait(handle, offset, data) {
-            Ok(rx) => {
-                self.pos += len as u64;
-                self.state.write_acks.push_back(rx);
-                Poll::Ready(Ok(len))
-            }
-            Err(e) => Poll::Ready(Err(io::Error::other(e.to_string()))),
+        if let Poll::Ready(Ok(len)) = poll {
+            self.pos += len as u64;
         }
+
+        poll
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        ready!(poll_drain_writes(&mut self.state.write_acks, cx))?;
-
-        if !self.features.fsync {
+        if !self.extensions.fsync {
             return Poll::Ready(Ok(()));
         }
 
@@ -308,7 +285,7 @@ impl AsyncWrite for File {
 
                 self.state.f_flush.get_or_insert(Box::pin(async move {
                     session
-                        .fsync(file_handle)
+                        .fsync_bytes(file_handle)
                         .await
                         .map(|_| ())
                         .map_err(|e| io::Error::other(e.to_string()))
@@ -328,8 +305,6 @@ impl AsyncWrite for File {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        ready!(poll_drain_writes(&mut self.state.write_acks, cx))?;
-
         let poll = Pin::new(match self.state.f_shutdown.as_mut() {
             Some(f) => f,
             None => {
@@ -338,7 +313,7 @@ impl AsyncWrite for File {
 
                 self.state.f_shutdown.get_or_insert(Box::pin(async move {
                     session
-                        .close(file_handle)
+                        .close_bytes(file_handle)
                         .await
                         .map_err(|e| io::Error::other(e.to_string()))?;
                     Ok(())

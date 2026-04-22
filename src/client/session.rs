@@ -175,7 +175,7 @@ impl SftpSession {
         let mut files = vec![];
 
         loop {
-            match self.session.readdir(handle.as_str()).await {
+            match self.session.readdir_bytes(handle.clone()).await {
                 Ok(name) => {
                     files = name
                         .files
@@ -189,7 +189,7 @@ impl SftpSession {
             }
         }
 
-        self.session.close(handle).await?;
+        self.session.close_bytes(handle).await?;
 
         Ok(ReadDir {
             parent,
