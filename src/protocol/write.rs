@@ -20,6 +20,19 @@ pub struct Write {
 }
 
 impl Write {
+    pub fn new(id: u32, handle: impl Into<Bytes>, offset: u64, data: impl Into<Bytes>) -> Self {
+        Self {
+            id,
+            handle: handle.into(),
+            offset,
+            data: data.into(),
+        }
+    }
+
+    pub fn from_string_vec(id: u32, handle: impl Into<String>, offset: u64, data: Vec<u8>) -> Self {
+        Self::new(id, Bytes::from(handle.into()), offset, Bytes::from(data))
+    }
+
     /// Zero-copy deserialization from Bytes.
     /// This bypasses serde to avoid allocations.
     pub fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, Error> {
@@ -38,6 +51,20 @@ impl Write {
     /// Get handle as string (lossy UTF-8 conversion for display/logging).
     pub fn handle_str(&self) -> std::borrow::Cow<'_, str> {
         String::from_utf8_lossy(&self.handle)
+    }
+
+    pub fn handle_string(&self) -> String {
+        self.handle_str().into_owned()
+    }
+
+    pub fn data_vec(&self) -> Vec<u8> {
+        self.data.to_vec()
+    }
+
+    pub fn into_parts_legacy(self) -> (u32, String, u64, Vec<u8>) {
+        let handle = String::from_utf8_lossy(&self.handle).into_owned();
+        let data = self.data.to_vec();
+        (self.id, handle, self.offset, data)
     }
 }
 

@@ -240,3 +240,127 @@ where
         debug!("sftp stream ended");
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{Status, Write};
+    use std::future::Future;
+
+    fn ok_status(id: u32) -> Status {
+        Status {
+            id,
+            status_code: StatusCode::Ok,
+            error_message: "Ok".to_string(),
+            language_tag: "en-US".to_string(),
+        }
+    }
+
+    #[derive(Default)]
+    struct LegacyHandler {
+        handle: Option<String>,
+        data: Option<Vec<u8>>,
+    }
+
+    impl Handler for LegacyHandler {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> Self::Error {
+            StatusCode::OpUnsupported
+        }
+
+        fn write(
+            &mut self,
+            id: u32,
+            handle: String,
+            _offset: u64,
+            data: Vec<u8>,
+        ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+            self.handle = Some(handle);
+            self.data = Some(data);
+            async move { Ok(ok_status(id)) }
+        }
+    }
+
+    #[derive(Default)]
+    struct BytesHandler {
+        handle: Option<Bytes>,
+        data: Option<Bytes>,
+    }
+
+    impl Handler<Bytes, Bytes> for BytesHandler {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> Self::Error {
+            StatusCode::OpUnsupported
+        }
+
+        fn write(
+            &mut self,
+            id: u32,
+            handle: Bytes,
+            _offset: u64,
+            data: Bytes,
+        ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+            self.handle = Some(handle);
+            self.data = Some(data);
+            async move { Ok(ok_status(id)) }
+        }
+    }
+
+    #[tokio::test]
+    async fn default_run_path_preserves_string_vec_handler_api() {
+        let mut handler = LegacyHandler::default();
+        let response = process_request(
+            Packet::Write(Write::from_string_vec(
+                7,
+                "legacy-handle",
+                0,
+                b"legacy-data".to_vec(),
+            )),
+            &mut handler,
+        )
+        .await;
+
+        assert!(matches!(
+            response,
+            Packet::Status(Status {
+                status_code: StatusCode::Ok,
+                ..
+            })
+        ));
+        assert_eq!(handler.handle.as_deref(), Some("legacy-handle"));
+        assert_eq!(handler.data.as_deref(), Some(&b"legacy-data"[..]));
+    }
+
+    #[tokio::test]
+    async fn bytes_run_path_preserves_bytes_handler_api() {
+        let mut handler = BytesHandler::default();
+        let response = process_request_bytes(
+            Packet::Write(Write::new(
+                8,
+                Bytes::from_static(b"bytes-handle"),
+                0,
+                Bytes::from_static(b"bytes-data"),
+            )),
+            &mut handler,
+        )
+        .await;
+
+        assert!(matches!(
+            response,
+            Packet::Status(Status {
+                status_code: StatusCode::Ok,
+                ..
+            })
+        ));
+        assert_eq!(
+            handler.handle.as_ref().map(Bytes::as_ref),
+            Some(&b"bytes-handle"[..])
+        );
+        assert_eq!(
+            handler.data.as_ref().map(Bytes::as_ref),
+            Some(&b"bytes-data"[..])
+        );
+    }
+}
