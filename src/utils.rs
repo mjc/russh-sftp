@@ -64,12 +64,14 @@ async fn read_packet_payload<S: AsyncRead + Unpin>(
 pub(crate) async fn read_packet_into_buf<'a, S: AsyncRead + Unpin>(
     stream: &mut S,
     buf: &'a mut BytesMut,
+    max_length: usize,
 ) -> Result<PacketBuffer<'a>, Error> {
     let length = stream.read_u32().await? as usize;
-    if length > MAX_PACKET_SIZE {
+    let max_length = max_length.min(MAX_PACKET_SIZE);
+    if length > max_length {
         return Err(Error::BadMessage(format!(
             "packet length {} exceeds maximum {}",
-            length, MAX_PACKET_SIZE
+            length, max_length
         )));
     }
 
@@ -92,7 +94,7 @@ pub async fn read_packet_into<S: AsyncRead + Unpin>(
     stream: &mut S,
     buf: &mut BytesMut,
 ) -> Result<Bytes, Error> {
-    match read_packet_into_buf(stream, buf).await? {
+    match read_packet_into_buf(stream, buf, MAX_PACKET_SIZE).await? {
         PacketBuffer::Reusable(buf) => Ok(buf.clone().freeze()),
         PacketBuffer::Owned(buf) => Ok(buf.freeze()),
     }
@@ -286,7 +288,7 @@ mod tests {
         let mut reader = ChunkedReader::new(packet_chunks(vec![b"ping".to_vec()]));
         let mut buf = BytesMut::with_capacity(16);
 
-        let result = read_packet_into_buf(&mut reader, &mut buf)
+        let result = read_packet_into_buf(&mut reader, &mut buf, MAX_PACKET_SIZE)
             .await
             .expect("read packet");
 
@@ -303,7 +305,7 @@ mod tests {
         let mut reader = ChunkedReader::new(packet_chunks(vec![payload.clone()]));
         let mut buf = BytesMut::with_capacity(32 * 1024);
 
-        let result = read_packet_into_buf(&mut reader, &mut buf)
+        let result = read_packet_into_buf(&mut reader, &mut buf, MAX_PACKET_SIZE)
             .await
             .expect("read packet");
 
@@ -324,7 +326,7 @@ mod tests {
         ]));
         let mut buf = BytesMut::with_capacity(8);
 
-        let result = read_packet_into_buf(&mut reader, &mut buf)
+        let result = read_packet_into_buf(&mut reader, &mut buf, MAX_PACKET_SIZE)
             .await
             .expect("read packet");
 
@@ -341,7 +343,7 @@ mod tests {
         let mut reader = ChunkedReader::new(vec![too_large.to_be_bytes().to_vec()]);
         let mut buf = BytesMut::with_capacity(16);
 
-        let err = read_packet_into_buf(&mut reader, &mut buf)
+        let err = read_packet_into_buf(&mut reader, &mut buf, MAX_PACKET_SIZE)
             .await
             .expect_err("oversized packet should be rejected");
 

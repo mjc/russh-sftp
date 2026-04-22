@@ -3,7 +3,7 @@ mod handles;
 mod reply;
 mod session;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 pub use self::handler::Handler;
@@ -13,9 +13,24 @@ pub use self::session::{ManagedSession, SessionHandler};
 
 use crate::{
     error::Error,
-    protocol::{Packet, Status, StatusCode},
-    utils::read_packet,
+    protocol::{serialize_packet_into_buf, Packet, Status, StatusCode},
+    utils::read_packet_into_buf,
 };
+
+const PACKET_BUF_CAPACITY: usize = 32 * 1024;
+const MAX_REUSABLE_WRITE_BUF_SIZE: usize = 256 * 1024;
+
+fn reset_write_buf_if_oversized(write_buf: &mut BytesMut) {
+    if write_buf.capacity() > MAX_REUSABLE_WRITE_BUF_SIZE {
+        *write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+    } else {
+        write_buf.clear();
+    }
+}
+
+fn handle_to_string(handle: Bytes) -> String {
+    String::from_utf8_lossy(&handle).into_owned()
+}
 
 macro_rules! into_wrap {
     ($id:expr, $handler:expr, $var:ident; $($arg:ident),*) => {
@@ -29,6 +44,27 @@ macro_rules! into_wrap {
                     language_tag: language_tag.unwrap_or_else(|| "en-US".to_string()),
                 })
             },
+            Ok(packet) => packet.into(),
+        }
+    };
+}
+
+macro_rules! into_result {
+    ($id:expr, $future:expr) => {
+        match $future.await {
+            Err(err) => {
+                let StatusReply {
+                    status_code,
+                    error_message,
+                    language_tag,
+                } = err.into();
+                Packet::Status(Status {
+                    id: $id,
+                    status_code,
+                    error_message: error_message.unwrap_or_else(|| status_code.to_string()),
+                    language_tag: language_tag.unwrap_or_else(|| "en-US".to_string()),
+                })
+            }
             Ok(packet) => packet.into(),
         }
     };
@@ -51,7 +87,70 @@ impl Default for Config {
 
 async fn process_request<H>(packet: Packet, handler: &mut H) -> Packet
 where
-    H: Handler + Send,
+    H: Handler<String, Vec<u8>> + Send,
+{
+    let id = packet.get_request_id();
+
+    match packet {
+        Packet::Init(init) => into_wrap!(id, handler, init; version, extensions),
+        Packet::Open(open) => into_wrap!(id, handler, open; id, filename, pflags, attrs),
+        Packet::Close(close) => {
+            into_result!(id, handler.close(close.id, handle_to_string(close.handle)))
+        }
+        Packet::Read(read) => into_result!(
+            id,
+            handler.read(
+                read.id,
+                handle_to_string(read.handle),
+                read.offset,
+                read.len
+            )
+        ),
+        Packet::Write(write) => into_result!(
+            id,
+            handler.write(
+                write.id,
+                handle_to_string(write.handle),
+                write.offset,
+                write.data.to_vec()
+            )
+        ),
+        Packet::Lstat(lstat) => into_wrap!(id, handler, lstat; id, path),
+        Packet::Fstat(fstat) => {
+            into_result!(id, handler.fstat(fstat.id, handle_to_string(fstat.handle)))
+        }
+        Packet::SetStat(setstat) => into_wrap!(id, handler, setstat; id, path, attrs),
+        Packet::FSetStat(fsetstat) => into_result!(
+            id,
+            handler.fsetstat(
+                fsetstat.id,
+                handle_to_string(fsetstat.handle),
+                fsetstat.attrs
+            )
+        ),
+        Packet::OpenDir(opendir) => into_wrap!(id, handler, opendir; id, path),
+        Packet::ReadDir(readdir) => {
+            into_result!(
+                id,
+                handler.readdir(readdir.id, handle_to_string(readdir.handle))
+            )
+        }
+        Packet::Remove(remove) => into_wrap!(id, handler, remove; id, filename),
+        Packet::MkDir(mkdir) => into_wrap!(id, handler, mkdir; id, path, attrs),
+        Packet::RmDir(rmdir) => into_wrap!(id, handler, rmdir; id, path),
+        Packet::RealPath(realpath) => into_wrap!(id, handler, realpath; id, path),
+        Packet::Stat(stat) => into_wrap!(id, handler, stat; id, path),
+        Packet::Rename(rename) => into_wrap!(id, handler, rename; id, oldpath, newpath),
+        Packet::ReadLink(readlink) => into_wrap!(id, handler, readlink; id, path),
+        Packet::Symlink(symlink) => into_wrap!(id, handler, symlink; id, linkpath, targetpath),
+        Packet::Extended(extended) => into_wrap!(id, handler, extended; id, request, data),
+        _ => Packet::error(0, StatusCode::BadMessage),
+    }
+}
+
+async fn process_request_bytes<H>(packet: Packet, handler: &mut H) -> Packet
+where
+    H: Handler<Bytes, Bytes> + Send,
 {
     let id = packet.get_request_id();
 
@@ -80,43 +179,135 @@ where
     }
 }
 
-async fn process_handler<H, S>(stream: &mut S, handler: &mut H, cfg: &Config) -> Result<(), Error>
+async fn process_handler<H, S>(
+    stream: &mut S,
+    handler: &mut H,
+    read_buf: &mut BytesMut,
+    write_buf: &mut BytesMut,
+    cfg: &Config,
+) -> Result<(), Error>
 where
-    H: Handler + Send,
+    H: Handler<String, Vec<u8>> + Send,
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut bytes = read_packet(stream, cfg.max_client_packet_len).await?;
+    let mut packet_buf =
+        read_packet_into_buf(stream, read_buf, cfg.max_client_packet_len as usize).await?;
 
-    let response = match Packet::try_from(&mut bytes) {
+    let response = match Packet::try_from(packet_buf.as_mut_bytes()) {
         Ok(request) => process_request(request, handler).await,
         Err(_) => Packet::error(0, StatusCode::BadMessage),
     };
 
-    let packet = Bytes::try_from(response)?;
-    stream.write_all(&packet).await?;
+    if let Err(err) = serialize_packet_into_buf(response, write_buf) {
+        reset_write_buf_if_oversized(write_buf);
+        return Err(err);
+    }
+    stream.write_all(write_buf).await?;
     stream.flush().await?;
+    reset_write_buf_if_oversized(write_buf);
 
     Ok(())
 }
 
-/// Run processing stream as SFTP
+async fn process_handler_bytes<H, S>(
+    stream: &mut S,
+    handler: &mut H,
+    read_buf: &mut BytesMut,
+    write_buf: &mut BytesMut,
+    cfg: &Config,
+) -> Result<(), Error>
+where
+    H: Handler<Bytes, Bytes> + Send,
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut packet_buf =
+        read_packet_into_buf(stream, read_buf, cfg.max_client_packet_len as usize).await?;
+
+    let response = match Packet::try_from(packet_buf.as_mut_bytes()) {
+        Ok(request) => process_request_bytes(request, handler).await,
+        Err(_) => Packet::error(0, StatusCode::BadMessage),
+    };
+
+    if let Err(err) = serialize_packet_into_buf(response, write_buf) {
+        reset_write_buf_if_oversized(write_buf);
+        return Err(err);
+    }
+    stream.write_all(write_buf).await?;
+    stream.flush().await?;
+    reset_write_buf_if_oversized(write_buf);
+
+    Ok(())
+}
+
+/// Run processing stream as SFTP using the backwards-compatible string-handle API.
 pub async fn run<S, H>(stream: S, handler: H)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    H: Handler + Send + 'static,
+    H: Handler<String, Vec<u8>> + Send + 'static,
 {
     run_with_config(stream, handler, Config::default()).await
 }
 
-/// Run processing stream as SFTP with custom configuration
+/// Run processing stream as SFTP with custom configuration.
 pub async fn run_with_config<S, H>(mut stream: S, mut handler: H, cfg: Config)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    H: Handler + Send + 'static,
+    H: Handler<String, Vec<u8>> + Send + 'static,
 {
     tokio::spawn(async move {
+        // Reusable buffers for reading/writing packets - avoids allocation per packet.
+        let mut read_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+        let mut write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+
         loop {
-            match process_handler(&mut stream, &mut handler, &cfg).await {
+            match process_handler(
+                &mut stream,
+                &mut handler,
+                &mut read_buf,
+                &mut write_buf,
+                &cfg,
+            )
+            .await
+            {
+                Err(Error::UnexpectedEof) => break,
+                Err(err) => warn!("{}", err),
+                Ok(_) => (),
+            }
+        }
+
+        debug!("sftp stream ended");
+    });
+}
+
+/// Run processing stream as SFTP using opaque byte handles and write payloads.
+pub async fn run_bytes<S, H>(stream: S, handler: H)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    H: Handler<Bytes, Bytes> + Send + 'static,
+{
+    run_bytes_with_config(stream, handler, Config::default()).await
+}
+
+/// Run processing stream as SFTP using opaque byte handles and write payloads with custom configuration.
+pub async fn run_bytes_with_config<S, H>(mut stream: S, mut handler: H, cfg: Config)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    H: Handler<Bytes, Bytes> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut read_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+        let mut write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+
+        loop {
+            match process_handler_bytes(
+                &mut stream,
+                &mut handler,
+                &mut read_buf,
+                &mut write_buf,
+                &cfg,
+            )
+            .await
+            {
                 Err(Error::UnexpectedEof) => break,
                 Err(err) => warn!("{}", err),
                 Ok(_) => (),

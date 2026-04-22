@@ -1,19 +1,24 @@
 use std::{collections::HashMap, future::Future};
 
-use crate::{
-    protocol::{Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, Version},
-    server::StatusReply,
+use crate::protocol::{
+    Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, Version,
 };
+use crate::server::StatusReply;
 
-/// Server handler for each client. This is `async_trait`
+/// Server handler for each client. This is `async_trait`.
+///
+/// For backwards compatibility, the default handler shape receives handles as
+/// `String` and write payloads as `Vec<u8>`. Implement `Handler<bytes::Bytes,
+/// bytes::Bytes>` and pass it to [`crate::server::run_bytes`] to preserve
+/// opaque handles and write payloads as bytes.
 #[cfg_attr(feature = "async-trait", async_trait::async_trait)]
-pub trait Handler: Sized {
+pub trait Handler<HandleT = String, WriteDataT = Vec<u8>>: Sized {
     /// The type must have an `Into<StatusReply>`
     /// implementation because a response must be sent
     /// to any request, even if completed by error.
     type Error: Into<StatusReply> + Send;
 
-    /// Called by the handler when the packet is not implemented
+    /// Called by the handler when the packet is not implemented.
     fn unimplemented(&self) -> Self::Error;
 
     /// The default is to send an SSH_FXP_VERSION response with
@@ -27,7 +32,7 @@ pub trait Handler: Sized {
         async { Ok(Version::new()) }
     }
 
-    /// Called on SSH_FXP_OPEN
+    /// Called on SSH_FXP_OPEN.
     #[allow(unused_variables)]
     fn open(
         &mut self,
@@ -41,23 +46,23 @@ pub trait Handler: Sized {
     }
 
     /// Called on SSH_FXP_CLOSE.
-    /// The status can be returned as Ok or as Err
+    /// The status can be returned as Ok or as Err.
     #[allow(unused_variables)]
     fn close(
         &mut self,
         id: u32,
-        handle: String,
+        handle: HandleT,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_READ
+    /// Called on SSH_FXP_READ.
     #[allow(unused_variables)]
     fn read(
         &mut self,
         id: u32,
-        handle: String,
+        handle: HandleT,
         offset: u64,
         len: u32,
     ) -> impl Future<Output = Result<Data, Self::Error>> + Send {
@@ -65,20 +70,20 @@ pub trait Handler: Sized {
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_WRITE
+    /// Called on SSH_FXP_WRITE.
     #[allow(unused_variables)]
     fn write(
         &mut self,
         id: u32,
-        handle: String,
+        handle: HandleT,
         offset: u64,
-        data: Vec<u8>,
+        data: WriteDataT,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_LSTAT
+    /// Called on SSH_FXP_LSTAT.
     #[allow(unused_variables)]
     fn lstat(
         &mut self,
@@ -89,18 +94,18 @@ pub trait Handler: Sized {
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_FSTAT
+    /// Called on SSH_FXP_FSTAT.
     #[allow(unused_variables)]
     fn fstat(
         &mut self,
         id: u32,
-        handle: String,
+        handle: HandleT,
     ) -> impl Future<Output = Result<Attrs, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_SETSTAT
+    /// Called on SSH_FXP_SETSTAT.
     #[allow(unused_variables)]
     fn setstat(
         &mut self,
@@ -112,19 +117,19 @@ pub trait Handler: Sized {
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_FSETSTAT
+    /// Called on SSH_FXP_FSETSTAT.
     #[allow(unused_variables)]
     fn fsetstat(
         &mut self,
         id: u32,
-        handle: String,
+        handle: HandleT,
         attrs: FileAttributes,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_OPENDIR
+    /// Called on SSH_FXP_OPENDIR.
     #[allow(unused_variables)]
     fn opendir(
         &mut self,
@@ -136,19 +141,19 @@ pub trait Handler: Sized {
     }
 
     /// Called on SSH_FXP_READDIR.
-    /// EOF error should be returned at the end of reading the directory
+    /// EOF error should be returned at the end of reading the directory.
     #[allow(unused_variables)]
     fn readdir(
         &mut self,
         id: u32,
-        handle: String,
+        handle: HandleT,
     ) -> impl Future<Output = Result<Name, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
     }
 
     /// Called on SSH_FXP_REMOVE.
-    /// The status can be returned as Ok or as Err
+    /// The status can be returned as Ok or as Err.
     #[allow(unused_variables)]
     fn remove(
         &mut self,
@@ -159,7 +164,7 @@ pub trait Handler: Sized {
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_MKDIR
+    /// Called on SSH_FXP_MKDIR.
     #[allow(unused_variables)]
     fn mkdir(
         &mut self,
@@ -172,7 +177,7 @@ pub trait Handler: Sized {
     }
 
     /// Called on SSH_FXP_RMDIR.
-    /// The status can be returned as Ok or as Err
+    /// The status can be returned as Ok or as Err.
     #[allow(unused_variables)]
     fn rmdir(
         &mut self,
@@ -184,7 +189,7 @@ pub trait Handler: Sized {
     }
 
     /// Called on SSH_FXP_REALPATH.
-    /// Must contain only one name and a dummy attributes
+    /// Must contain only one name and a dummy attributes.
     #[allow(unused_variables)]
     fn realpath(
         &mut self,
@@ -195,7 +200,7 @@ pub trait Handler: Sized {
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_STAT
+    /// Called on SSH_FXP_STAT.
     #[allow(unused_variables)]
     fn stat(
         &mut self,
@@ -207,7 +212,7 @@ pub trait Handler: Sized {
     }
 
     /// Called on SSH_FXP_RENAME.
-    /// The status can be returned as Ok or as Err
+    /// The status can be returned as Ok or as Err.
     #[allow(unused_variables)]
     fn rename(
         &mut self,
@@ -219,7 +224,7 @@ pub trait Handler: Sized {
         async { Err(err) }
     }
 
-    /// Called on SSH_FXP_READLINK
+    /// Called on SSH_FXP_READLINK.
     #[allow(unused_variables)]
     fn readlink(
         &mut self,
@@ -231,7 +236,7 @@ pub trait Handler: Sized {
     }
 
     /// Called on SSH_FXP_SYMLINK.
-    /// The status can be returned as Ok or as Err
+    /// The status can be returned as Ok or as Err.
     #[allow(unused_variables)]
     fn symlink(
         &mut self,
@@ -246,7 +251,7 @@ pub trait Handler: Sized {
     /// Called on SSH_FXP_EXTENDED.
     /// The extension can return any packet, so it's not specific.
     /// If the server does not recognize the `request' name
-    /// the server must respond with an SSH_FX_OP_UNSUPPORTED error
+    /// the server must respond with an SSH_FX_OP_UNSUPPORTED error.
     #[allow(unused_variables)]
     fn extended(
         &mut self,
