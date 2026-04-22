@@ -29,7 +29,7 @@ mod write;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use crate::{de, error::Error, ser};
+use crate::{buf::TryBuf, error::Error, ser, utils::MAX_PACKET_SIZE};
 
 pub use self::{
     attrs::Attrs,
@@ -198,83 +198,619 @@ impl TryFrom<&mut Bytes> for Packet {
     type Error = Error;
 
     fn try_from(bytes: &mut Bytes) -> Result<Self, Self::Error> {
-        let r#type = bytes.try_get_u8()?;
-        debug!("packet type {}", r#type);
-
-        let request = match r#type {
-            SSH_FXP_INIT => Self::Init(de::from_bytes(bytes)?),
-            SSH_FXP_VERSION => Self::Version(de::from_bytes(bytes)?),
-            SSH_FXP_OPEN => Self::Open(de::from_bytes(bytes)?),
-            SSH_FXP_CLOSE => Self::Close(de::from_bytes(bytes)?),
-            SSH_FXP_READ => Self::Read(de::from_bytes(bytes)?),
-            SSH_FXP_WRITE => Self::Write(de::from_bytes(bytes)?),
-            SSH_FXP_LSTAT => Self::Lstat(de::from_bytes(bytes)?),
-            SSH_FXP_FSTAT => Self::Fstat(de::from_bytes(bytes)?),
-            SSH_FXP_SETSTAT => Self::SetStat(de::from_bytes(bytes)?),
-            SSH_FXP_FSETSTAT => Self::FSetStat(de::from_bytes(bytes)?),
-            SSH_FXP_OPENDIR => Self::OpenDir(de::from_bytes(bytes)?),
-            SSH_FXP_READDIR => Self::ReadDir(de::from_bytes(bytes)?),
-            SSH_FXP_REMOVE => Self::Remove(de::from_bytes(bytes)?),
-            SSH_FXP_MKDIR => Self::MkDir(de::from_bytes(bytes)?),
-            SSH_FXP_RMDIR => Self::RmDir(de::from_bytes(bytes)?),
-            SSH_FXP_REALPATH => Self::RealPath(de::from_bytes(bytes)?),
-            SSH_FXP_STAT => Self::Stat(de::from_bytes(bytes)?),
-            SSH_FXP_RENAME => Self::Rename(de::from_bytes(bytes)?),
-            SSH_FXP_READLINK => Self::ReadLink(de::from_bytes(bytes)?),
-            SSH_FXP_SYMLINK => Self::Symlink(de::from_bytes(bytes)?),
-            SSH_FXP_STATUS => Self::Status(de::from_bytes(bytes)?),
-            SSH_FXP_HANDLE => Self::Handle(de::from_bytes(bytes)?),
-            SSH_FXP_DATA => Self::Data(de::from_bytes(bytes)?),
-            SSH_FXP_NAME => Self::Name(de::from_bytes(bytes)?),
-            SSH_FXP_ATTRS => Self::Attrs(de::from_bytes(bytes)?),
-            SSH_FXP_EXTENDED => Self::Extended(de::from_bytes(bytes)?),
-            SSH_FXP_EXTENDED_REPLY => Self::ExtendedReply(de::from_bytes(bytes)?),
-            _ => return Err(Error::BadMessage("unknown type".to_owned())),
-        };
-
-        Ok(request)
+        try_from_buf(bytes)
     }
+}
+
+impl TryFrom<&mut BytesMut> for Packet {
+    type Error = Error;
+
+    fn try_from(bytes: &mut BytesMut) -> Result<Self, Self::Error> {
+        try_from_buf(bytes)
+    }
+}
+
+fn try_from_buf<B>(bytes: &mut B) -> Result<Packet, Error>
+where
+    B: Buf + TryBuf,
+{
+    let r#type = bytes.try_get_u8()?;
+    debug!("packet type {}", r#type);
+
+    let request = match r#type {
+        SSH_FXP_INIT => Packet::Init(Init::from_bytes(bytes)?),
+        SSH_FXP_VERSION => Packet::Version(Version::from_bytes(bytes)?),
+        SSH_FXP_OPEN => Packet::Open(Open::from_bytes(bytes)?),
+        SSH_FXP_CLOSE => Packet::Close(Close::from_bytes(bytes)?),
+        // Manual deserialization for consistency with Write/Data
+        SSH_FXP_READ => Packet::Read(Read::from_bytes(bytes)?),
+        // Zero-copy deserialization - bypasses serde to avoid Vec allocation
+        SSH_FXP_WRITE => Packet::Write(Write::from_bytes(bytes)?),
+        SSH_FXP_LSTAT => Packet::Lstat(Lstat::from_bytes(bytes)?),
+        SSH_FXP_FSTAT => Packet::Fstat(Fstat::from_bytes(bytes)?),
+        SSH_FXP_SETSTAT => Packet::SetStat(SetStat::from_bytes(bytes)?),
+        SSH_FXP_FSETSTAT => Packet::FSetStat(FSetStat::from_bytes(bytes)?),
+        SSH_FXP_OPENDIR => Packet::OpenDir(OpenDir::from_bytes(bytes)?),
+        SSH_FXP_READDIR => Packet::ReadDir(ReadDir::from_bytes(bytes)?),
+        SSH_FXP_REMOVE => Packet::Remove(Remove::from_bytes(bytes)?),
+        SSH_FXP_MKDIR => Packet::MkDir(MkDir::from_bytes(bytes)?),
+        SSH_FXP_RMDIR => Packet::RmDir(RmDir::from_bytes(bytes)?),
+        SSH_FXP_REALPATH => Packet::RealPath(RealPath::from_bytes(bytes)?),
+        SSH_FXP_STAT => Packet::Stat(Stat::from_bytes(bytes)?),
+        SSH_FXP_RENAME => Packet::Rename(Rename::from_bytes(bytes)?),
+        SSH_FXP_READLINK => Packet::ReadLink(ReadLink::from_bytes(bytes)?),
+        SSH_FXP_SYMLINK => Packet::Symlink(Symlink::from_bytes(bytes)?),
+        SSH_FXP_STATUS => Packet::Status(Status::from_bytes(bytes)?),
+        SSH_FXP_HANDLE => Packet::Handle(Handle::from_bytes(bytes)?),
+        // Zero-copy deserialization - bypasses serde to avoid Vec allocation
+        SSH_FXP_DATA => Packet::Data(Data::from_bytes(bytes)?),
+        SSH_FXP_NAME => Packet::Name(Name::from_bytes(bytes)?),
+        SSH_FXP_ATTRS => Packet::Attrs(Attrs::from_bytes(bytes)?),
+        SSH_FXP_EXTENDED => Packet::Extended(Extended::from_bytes(bytes)?),
+        SSH_FXP_EXTENDED_REPLY => Packet::ExtendedReply(ExtendedReply::from_bytes(bytes)?),
+        _ => return Err(Error::BadMessage("unknown type".to_owned())),
+    };
+
+    Ok(request)
+}
+
+macro_rules! serialize_packet {
+    ($($variant:ident => $type_const:expr),+ $(,)?) => {
+        |packet: Packet, bytes: &mut BytesMut| -> Result<(), Error> {
+            match packet {
+                $(
+                    Packet::$variant(v) => {
+                        bytes.put_u8($type_const);
+                        ser::to_bytes_into(&v, bytes)?;
+                    }
+                )+
+                _ => unreachable!("packet variant should have been handled before serializer"),
+            }
+            Ok(())
+        }
+    };
+}
+
+/// Serialize a packet into an existing buffer, returning owned `Bytes`.
+/// The buffer is cleared and reused while serializing, then cloned into the
+/// returned `Bytes`.
+pub fn serialize_packet_into(packet: Packet, buf: &mut BytesMut) -> Result<Bytes, Error> {
+    serialize_packet_into_buf(packet, buf)?;
+    Ok(buf.clone().freeze())
+}
+
+fn checked_packet_length(length: usize) -> Result<u32, Error> {
+    if length > MAX_PACKET_SIZE {
+        return Err(Error::BadMessage(format!(
+            "length {length} exceeds maximum {MAX_PACKET_SIZE}"
+        )));
+    }
+
+    u32::try_from(length).map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))
+}
+
+fn checked_add_len(lhs: usize, rhs: usize) -> Result<usize, Error> {
+    lhs.checked_add(rhs)
+        .ok_or_else(|| Error::BadMessage("length overflow".to_owned()))
+}
+
+fn checked_write_packet_payload_len(write: &Write) -> Result<usize, Error> {
+    let length = checked_add_len(1, 4)?;
+    let length = checked_add_len(length, 4)?;
+    let length = checked_add_len(length, write.handle.len())?;
+    let length = checked_add_len(length, 8)?;
+    let length = checked_add_len(length, 4)?;
+    let length = checked_add_len(length, write.data.len())?;
+    checked_packet_length(length)?;
+    Ok(length)
+}
+
+fn checked_data_packet_payload_len(data: &Data) -> Result<usize, Error> {
+    let length = checked_add_len(1, 4)?;
+    let length = checked_add_len(length, 4)?;
+    let length = checked_add_len(length, data.data.len())?;
+    checked_packet_length(length)?;
+    Ok(length)
+}
+
+pub(crate) fn serialize_packet_into_buf(packet: Packet, buf: &mut BytesMut) -> Result<(), Error> {
+    buf.clear();
+
+    let result = (|| {
+        // Estimate capacity based on packet type to avoid reallocations
+        let capacity = match &packet {
+            Packet::Write(w) => {
+                let payload_len = checked_write_packet_payload_len(w)?;
+                4 + payload_len
+            }
+            Packet::Data(d) => {
+                let payload_len = checked_data_packet_payload_len(d)?;
+                4 + payload_len
+            }
+            _ => 256,
+        };
+        buf.reserve(capacity);
+
+        // Single buffer: [length:4][type:1][payload...]
+        buf.put_u32(0); // placeholder for length
+
+        match packet {
+            Packet::Data(data) => {
+                buf.put_u8(SSH_FXP_DATA);
+                data.serialize_into(buf)?;
+            }
+            other => {
+                let serializer = serialize_packet!(
+                    Init => SSH_FXP_INIT,
+                    Version => SSH_FXP_VERSION,
+                    Open => SSH_FXP_OPEN,
+                    Close => SSH_FXP_CLOSE,
+                    Read => SSH_FXP_READ,
+                    Write => SSH_FXP_WRITE,
+                    Lstat => SSH_FXP_LSTAT,
+                    Fstat => SSH_FXP_FSTAT,
+                    SetStat => SSH_FXP_SETSTAT,
+                    FSetStat => SSH_FXP_FSETSTAT,
+                    OpenDir => SSH_FXP_OPENDIR,
+                    ReadDir => SSH_FXP_READDIR,
+                    Remove => SSH_FXP_REMOVE,
+                    MkDir => SSH_FXP_MKDIR,
+                    RmDir => SSH_FXP_RMDIR,
+                    RealPath => SSH_FXP_REALPATH,
+                    Stat => SSH_FXP_STAT,
+                    Rename => SSH_FXP_RENAME,
+                    ReadLink => SSH_FXP_READLINK,
+                    Symlink => SSH_FXP_SYMLINK,
+                    Status => SSH_FXP_STATUS,
+                    Handle => SSH_FXP_HANDLE,
+                    Name => SSH_FXP_NAME,
+                    Attrs => SSH_FXP_ATTRS,
+                    Extended => SSH_FXP_EXTENDED,
+                    ExtendedReply => SSH_FXP_EXTENDED_REPLY,
+                );
+                serializer(other, buf)?;
+            }
+        }
+
+        // Patch length (excludes the 4-byte length field itself)
+        let length = checked_packet_length(buf.len() - 4)?;
+        buf[0..4].copy_from_slice(&length.to_be_bytes());
+
+        Ok(())
+    })();
+
+    if result.is_err() {
+        buf.clear();
+    }
+
+    result
 }
 
 impl TryFrom<Packet> for Bytes {
     type Error = Error;
 
     fn try_from(packet: Packet) -> Result<Self, Self::Error> {
-        let (r#type, payload): (u8, Bytes) = match packet {
-            Packet::Init(init) => (SSH_FXP_INIT, ser::to_bytes(&init)?),
-            Packet::Version(version) => (SSH_FXP_VERSION, ser::to_bytes(&version)?),
-            Packet::Open(open) => (SSH_FXP_OPEN, ser::to_bytes(&open)?),
-            Packet::Close(close) => (SSH_FXP_CLOSE, ser::to_bytes(&close)?),
-            Packet::Read(read) => (SSH_FXP_READ, ser::to_bytes(&read)?),
-            Packet::Write(write) => (SSH_FXP_WRITE, ser::to_bytes(&write)?),
-            Packet::Lstat(stat) => (SSH_FXP_LSTAT, ser::to_bytes(&stat)?),
-            Packet::Fstat(stat) => (SSH_FXP_FSTAT, ser::to_bytes(&stat)?),
-            Packet::SetStat(setstat) => (SSH_FXP_SETSTAT, ser::to_bytes(&setstat)?),
-            Packet::FSetStat(setstat) => (SSH_FXP_FSETSTAT, ser::to_bytes(&setstat)?),
-            Packet::OpenDir(opendir) => (SSH_FXP_OPENDIR, ser::to_bytes(&opendir)?),
-            Packet::ReadDir(readdir) => (SSH_FXP_READDIR, ser::to_bytes(&readdir)?),
-            Packet::Remove(remove) => (SSH_FXP_REMOVE, ser::to_bytes(&remove)?),
-            Packet::MkDir(mkdir) => (SSH_FXP_MKDIR, ser::to_bytes(&mkdir)?),
-            Packet::RmDir(rmdir) => (SSH_FXP_RMDIR, ser::to_bytes(&rmdir)?),
-            Packet::RealPath(realpath) => (SSH_FXP_REALPATH, ser::to_bytes(&realpath)?),
-            Packet::Stat(stat) => (SSH_FXP_STAT, ser::to_bytes(&stat)?),
-            Packet::Rename(rename) => (SSH_FXP_RENAME, ser::to_bytes(&rename)?),
-            Packet::ReadLink(readlink) => (SSH_FXP_READLINK, ser::to_bytes(&readlink)?),
-            Packet::Symlink(symlink) => (SSH_FXP_SYMLINK, ser::to_bytes(&symlink)?),
-            Packet::Status(status) => (SSH_FXP_STATUS, ser::to_bytes(&status)?),
-            Packet::Handle(handle) => (SSH_FXP_HANDLE, ser::to_bytes(&handle)?),
-            Packet::Data(data) => (SSH_FXP_DATA, ser::to_bytes(&data)?),
-            Packet::Name(name) => (SSH_FXP_NAME, ser::to_bytes(&name)?),
-            Packet::Attrs(attrs) => (SSH_FXP_ATTRS, ser::to_bytes(&attrs)?),
-            Packet::Extended(extended) => (SSH_FXP_EXTENDED, ser::to_bytes(&extended)?),
-            Packet::ExtendedReply(reply) => (SSH_FXP_EXTENDED_REPLY, ser::to_bytes(&reply)?),
+        let mut buf = BytesMut::new();
+        serialize_packet_into_buf(packet, &mut buf)?;
+        Ok(buf.freeze())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BufMut;
+
+    fn assert_packet_roundtrip(packet: Packet, check: impl FnOnce(Packet)) {
+        let serialized: Bytes = packet.try_into().expect("serialize failed");
+        let mut bytes = serialized.slice(4..);
+        let parsed = Packet::try_from(&mut bytes).expect("deserialize failed");
+        check(parsed);
+    }
+
+    #[test]
+    fn packet_write_roundtrip() {
+        let original = Write {
+            id: 42,
+            handle: Bytes::from_static(b"test-handle"),
+            offset: 1024,
+            data: Bytes::from_static(b"hello world"),
+        };
+        assert_packet_roundtrip(Packet::Write(original), |packet| {
+            if let Packet::Write(write) = packet {
+                assert_eq!(write.id, 42);
+                assert_eq!(write.handle.as_ref(), b"test-handle");
+                assert_eq!(write.offset, 1024);
+                assert_eq!(write.data.as_ref(), b"hello world");
+            } else {
+                panic!("Expected Write packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_data_roundtrip() {
+        let original = Data {
+            id: 99,
+            data: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        };
+        assert_packet_roundtrip(Packet::Data(original), |packet| {
+            if let Packet::Data(data) = packet {
+                assert_eq!(data.id, 99);
+                assert_eq!(data.data.as_ref(), &[0xDE, 0xAD, 0xBE, 0xEF]);
+            } else {
+                panic!("Expected Data packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_write_large_data() {
+        let large_data = vec![0xABu8; 64 * 1024]; // 64KB
+        let original = Write {
+            id: 1,
+            handle: Bytes::from_static(b"big"),
+            offset: 0,
+            data: Bytes::from(large_data.clone()),
         };
 
-        let length = payload.len() as u32 + 1;
+        assert_packet_roundtrip(Packet::Write(original), |packet| {
+            if let Packet::Write(write) = packet {
+                assert_eq!(write.data.len(), 64 * 1024);
+                assert_eq!(write.data.as_ref(), large_data.as_slice());
+            } else {
+                panic!("Expected Write packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_handle_roundtrip() {
+        let original = Handle {
+            id: 7,
+            handle: Bytes::from_static(b"opaque-handle"),
+        };
+
+        assert_packet_roundtrip(Packet::Handle(original), |packet| {
+            if let Packet::Handle(handle) = packet {
+                assert_eq!(handle.id, 7);
+                assert_eq!(handle.handle.as_ref(), b"opaque-handle");
+            } else {
+                panic!("Expected Handle packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_status_roundtrip() {
+        let original = Status {
+            id: 9,
+            status_code: StatusCode::Failure,
+            error_message: "failed".to_string(),
+            language_tag: "en-US".to_string(),
+        };
+
+        assert_packet_roundtrip(Packet::Status(original), |packet| {
+            if let Packet::Status(status) = packet {
+                assert_eq!(status.id, 9);
+                assert_eq!(status.status_code, StatusCode::Failure);
+                assert_eq!(status.error_message, "failed");
+                assert_eq!(status.language_tag, "en-US");
+            } else {
+                panic!("Expected Status packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_name_roundtrip() {
+        let original = Name {
+            id: 11,
+            files: vec![
+                File {
+                    filename: "a.txt".to_string(),
+                    longname: "-rw-r--r-- a.txt".to_string(),
+                    attrs: FileAttributes {
+                        size: Some(1),
+                        uid: Some(1000),
+                        user: None,
+                        gid: Some(1001),
+                        group: None,
+                        permissions: Some(0o100644),
+                        atime: Some(10),
+                        mtime: Some(20),
+                    },
+                },
+                File {
+                    filename: "dir".to_string(),
+                    longname: "drwxr-xr-x dir".to_string(),
+                    attrs: FileAttributes {
+                        permissions: Some(0o040755),
+                        ..FileAttributes::empty()
+                    },
+                },
+            ],
+        };
+
+        assert_packet_roundtrip(Packet::Name(original), |packet| {
+            if let Packet::Name(name) = packet {
+                assert_eq!(name.id, 11);
+                assert_eq!(name.files.len(), 2);
+                assert_eq!(name.files[0].filename, "a.txt");
+                assert_eq!(name.files[0].attrs.size, Some(1));
+                assert_eq!(name.files[1].filename, "dir");
+                assert_eq!(name.files[1].attrs.permissions, Some(0o040755));
+            } else {
+                panic!("Expected Name packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_open_roundtrip() {
+        let original = Open {
+            id: 12,
+            filename: "/tmp/file".to_string(),
+            pflags: OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
+            attrs: FileAttributes {
+                size: Some(77),
+                permissions: Some(0o100644),
+                ..FileAttributes::empty()
+            },
+        };
+
+        assert_packet_roundtrip(Packet::Open(original), |packet| {
+            if let Packet::Open(open) = packet {
+                assert_eq!(open.id, 12);
+                assert_eq!(open.filename, "/tmp/file");
+                assert!(open.pflags.contains(OpenFlags::READ));
+                assert!(open.pflags.contains(OpenFlags::WRITE));
+                assert!(open.pflags.contains(OpenFlags::CREATE));
+                assert_eq!(open.attrs.size, Some(77));
+                assert_eq!(open.attrs.permissions, Some(0o100644));
+            } else {
+                panic!("Expected Open packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_rename_roundtrip() {
+        let original = Rename {
+            id: 13,
+            oldpath: "/old".to_string(),
+            newpath: "/new".to_string(),
+        };
+
+        assert_packet_roundtrip(Packet::Rename(original), |packet| {
+            if let Packet::Rename(rename) = packet {
+                assert_eq!(rename.oldpath, "/old");
+                assert_eq!(rename.newpath, "/new");
+            } else {
+                panic!("Expected Rename packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_init_roundtrip() {
+        let mut extensions = std::collections::HashMap::new();
+        extensions.insert("limits@openssh.com".to_string(), "1".to_string());
+        extensions.insert("statvfs@openssh.com".to_string(), "2".to_string());
+
+        assert_packet_roundtrip(
+            Packet::Init(Init {
+                version: VERSION,
+                extensions: extensions.clone(),
+            }),
+            |packet| {
+                if let Packet::Init(init) = packet {
+                    assert_eq!(init.version, VERSION);
+                    assert_eq!(init.extensions, extensions);
+                } else {
+                    panic!("Expected Init packet");
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn packet_fsetstat_roundtrip() {
+        let original = FSetStat {
+            id: 21,
+            handle: Bytes::from_static(b"opaque-handle"),
+            attrs: FileAttributes {
+                size: Some(512),
+                permissions: Some(0o100600),
+                atime: Some(10),
+                mtime: Some(20),
+                ..FileAttributes::empty()
+            },
+        };
+
+        assert_packet_roundtrip(Packet::FSetStat(original), |packet| {
+            if let Packet::FSetStat(fsetstat) = packet {
+                assert_eq!(fsetstat.id, 21);
+                assert_eq!(fsetstat.handle.as_ref(), b"opaque-handle");
+                assert_eq!(fsetstat.attrs.size, Some(512));
+                assert_eq!(fsetstat.attrs.permissions, Some(0o100600));
+            } else {
+                panic!("Expected FSetStat packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_extended_roundtrip() {
+        let original = Extended {
+            id: 31,
+            request: "limits@openssh.com".to_string(),
+            data: vec![1, 2, 3, 4],
+        };
+
+        assert_packet_roundtrip(Packet::Extended(original), |packet| {
+            if let Packet::Extended(extended) = packet {
+                assert_eq!(extended.id, 31);
+                assert_eq!(extended.request, "limits@openssh.com");
+                assert_eq!(extended.data, vec![1, 2, 3, 4]);
+            } else {
+                panic!("Expected Extended packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_attrs_roundtrip() {
+        let original = Attrs {
+            id: 41,
+            attrs: FileAttributes {
+                uid: Some(1000),
+                gid: Some(1001),
+                permissions: Some(0o040755),
+                ..FileAttributes::empty()
+            },
+        };
+
+        assert_packet_roundtrip(Packet::Attrs(original), |packet| {
+            if let Packet::Attrs(attrs) = packet {
+                assert_eq!(attrs.id, 41);
+                assert_eq!(attrs.attrs.uid, Some(1000));
+                assert_eq!(attrs.attrs.gid, Some(1001));
+                assert_eq!(attrs.attrs.permissions, Some(0o040755));
+            } else {
+                panic!("Expected Attrs packet");
+            }
+        });
+    }
+
+    #[test]
+    fn packet_handle_preserves_binary_bytes() {
         let mut bytes = BytesMut::new();
-        bytes.put_u32(length);
-        bytes.put_u8(r#type);
-        bytes.put_slice(&payload);
-        Ok(bytes.freeze())
+        bytes.put_u8(SSH_FXP_HANDLE);
+        bytes.put_u32(1);
+        bytes.put_u32(2);
+        bytes.extend_from_slice(&[0xFF, 0xFE]);
+
+        let mut bytes = bytes.freeze();
+        let packet = Packet::try_from(&mut bytes).expect("deserialize binary handle");
+
+        if let Packet::Handle(handle) = packet {
+            assert_eq!(handle.handle.as_ref(), &[0xFF, 0xFE]);
+        } else {
+            panic!("Expected Handle packet");
+        }
+    }
+
+    #[test]
+    fn packet_name_truncated_fails() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(SSH_FXP_NAME);
+        bytes.put_u32(1);
+        bytes.put_u32(1);
+        bytes.put_u32(5);
+        bytes.extend_from_slice(b"ab");
+
+        let mut bytes = bytes.freeze();
+        let err = Packet::try_from(&mut bytes).expect_err("truncated name should fail");
+        assert!(matches!(
+            err,
+            Error::BadMessage(_) | Error::UnexpectedBehavior(_)
+        ));
+    }
+
+    #[test]
+    fn packet_name_count_too_large_fails() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(SSH_FXP_NAME);
+        bytes.put_u32(1);
+        bytes.put_u32(2);
+        bytes.put_u32(0);
+        bytes.put_u32(0);
+        bytes.put_u32(0);
+
+        let mut bytes = bytes.freeze();
+        let err = Packet::try_from(&mut bytes).expect_err("oversized name count should fail");
+
+        assert!(matches!(err, Error::BadMessage(_)));
+    }
+
+    #[test]
+    fn serialize_packet_into_preserves_reusable_buffer_capacity() {
+        let packet = Packet::Write(Write {
+            id: 1,
+            handle: Bytes::from_static(b"handle"),
+            offset: 0,
+            data: Bytes::from(vec![0xAB; 32 * 1024]),
+        });
+        let mut buf = BytesMut::with_capacity(64 * 1024);
+        let initial_capacity = buf.capacity();
+
+        let serialized = serialize_packet_into(packet, &mut buf).expect("serialize packet");
+
+        assert!(!serialized.is_empty());
+        assert_eq!(buf.capacity(), initial_capacity);
+    }
+
+    #[test]
+    fn serialize_packet_into_buf_reuses_existing_allocation() {
+        let packet = Packet::Data(Data {
+            id: 1,
+            data: Bytes::from_static(b"payload"),
+        });
+        let mut buf = BytesMut::with_capacity(64 * 1024);
+        let ptr = buf.as_ptr();
+
+        serialize_packet_into_buf(packet, &mut buf).expect("serialize packet");
+
+        assert_eq!(buf.as_ptr(), ptr);
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn serialize_packet_into_rejects_oversized_packets() {
+        let err = checked_packet_length(MAX_PACKET_SIZE + 1)
+            .expect_err("oversized packet should be rejected");
+
+        assert!(matches!(err, Error::BadMessage(_)));
+    }
+
+    #[test]
+    fn serialize_packet_into_data_matches_existing_wire_shape() {
+        let packet = Packet::Data(Data {
+            id: 7,
+            data: Bytes::from_static(b"payload"),
+        });
+        let data = Data {
+            id: 7,
+            data: Bytes::from_static(b"payload"),
+        };
+        let mut packet_buf = BytesMut::new();
+
+        let packet_bytes =
+            serialize_packet_into(packet, &mut packet_buf).expect("serialize packet");
+        let payload_bytes = crate::ser::to_bytes(&data).expect("serialize data payload");
+
+        assert_eq!(
+            packet_bytes[0..4],
+            (payload_bytes.len() as u32 + 1).to_be_bytes()
+        );
+        assert_eq!(packet_bytes[4], SSH_FXP_DATA);
+        assert_eq!(&packet_bytes[5..], &payload_bytes[..]);
+    }
+
+    #[test]
+    fn serialize_packet_into_data_handles_empty_payloads() {
+        let packet = Packet::Data(Data {
+            id: 9,
+            data: Bytes::new(),
+        });
+        let mut buf = BytesMut::new();
+
+        let serialized = serialize_packet_into(packet, &mut buf).expect("serialize packet");
+
+        assert_eq!(serialized[4], SSH_FXP_DATA);
+        assert_eq!(&serialized[5..9], &9u32.to_be_bytes());
+        assert_eq!(&serialized[9..13], &0u32.to_be_bytes());
+        assert_eq!(serialized.len(), 13);
     }
 }
