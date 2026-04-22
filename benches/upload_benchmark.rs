@@ -2,6 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use log::debug;
 use russh::{client, ChannelId};
 use russh_sftp::client::SftpSession;
+use std::env;
 use std::sync::Arc;
 use tokio::{
     io::AsyncWriteExt,
@@ -61,7 +62,8 @@ async fn test_upload_data(sftp: SftpSession, file_count: i32, file_size: i32) {
 async fn upload_file(file_count: i32, file_size: i32) {
     let config = russh::client::Config::default();
     let sh = Client {};
-    let mut session = russh::client::connect(Arc::new(config), ("localhost", 22), sh)
+    let addr = env::var("SFTP_BENCH_ADDR").unwrap_or_else(|_| "localhost:22".to_string());
+    let mut session = russh::client::connect(Arc::new(config), addr.as_str(), sh)
         .await
         .unwrap();
     if session
