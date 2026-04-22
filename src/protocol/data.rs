@@ -14,15 +14,8 @@ pub struct Data {
 }
 
 impl Data {
-    pub fn new(id: u32, data: impl Into<Bytes>) -> Self {
-        Self {
-            id,
-            data: data.into(),
-        }
-    }
-
-    pub fn from_vec(id: u32, data: Vec<u8>) -> Self {
-        Self::new(id, Bytes::from(data))
+    pub fn new(id: u32, data: Bytes) -> Self {
+        Self { id, data }
     }
 
     /// Zero-copy deserialization from Bytes.
@@ -41,14 +34,6 @@ impl Data {
         );
         output.put_slice(&self.data);
         Ok(())
-    }
-
-    pub fn data_vec(&self) -> Vec<u8> {
-        self.data.to_vec()
-    }
-
-    pub fn into_vec(self) -> Vec<u8> {
-        self.data.to_vec()
     }
 }
 

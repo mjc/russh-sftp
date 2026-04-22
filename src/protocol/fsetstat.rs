@@ -7,7 +7,7 @@ use crate::{buf::TryBuf, error::Error};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FSetStat {
     pub id: u32,
-    /// File handle (opaque bytes, use `handle_str()` for display).
+    /// File handle (opaque bytes).
     #[serde(deserialize_with = "crate::de::bytes_deserialize")]
     #[serde(serialize_with = "crate::ser::bytes_serialize")]
     pub handle: Bytes,
@@ -15,16 +15,8 @@ pub struct FSetStat {
 }
 
 impl FSetStat {
-    pub fn new(id: u32, handle: impl Into<Bytes>, attrs: FileAttributes) -> Self {
-        Self {
-            id,
-            handle: handle.into(),
-            attrs,
-        }
-    }
-
-    pub fn from_string(id: u32, handle: impl Into<String>, attrs: FileAttributes) -> Self {
-        Self::new(id, Bytes::from(handle.into()), attrs)
+    pub fn new(id: u32, handle: Bytes, attrs: FileAttributes) -> Self {
+        Self { id, handle, attrs }
     }
 
     pub fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, Error> {
@@ -33,19 +25,6 @@ impl FSetStat {
             handle: input.try_get_bytes()?,
             attrs: FileAttributes::from_bytes(input)?,
         })
-    }
-
-    /// Get handle as string (lossy UTF-8 conversion for display/logging).
-    pub fn handle_str(&self) -> std::borrow::Cow<'_, str> {
-        String::from_utf8_lossy(&self.handle)
-    }
-
-    pub fn handle_string(&self) -> String {
-        self.handle_str().into_owned()
-    }
-
-    pub fn into_handle_string(self) -> String {
-        String::from_utf8_lossy(&self.handle).into_owned()
     }
 }
 

@@ -8,8 +8,7 @@ use crate::error::Error;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Read {
     pub id: u32,
-    /// File handle (opaque bytes, use `handle_str()` for display).
-    /// Zero-copy from packet buffer.
+    /// File handle (opaque bytes). Zero-copy from packet buffer.
     #[serde(deserialize_with = "crate::de::bytes_deserialize")]
     #[serde(serialize_with = "crate::ser::bytes_serialize")]
     pub handle: Bytes,
@@ -18,17 +17,13 @@ pub struct Read {
 }
 
 impl Read {
-    pub fn new(id: u32, handle: impl Into<Bytes>, offset: u64, len: u32) -> Self {
+    pub fn new(id: u32, handle: Bytes, offset: u64, len: u32) -> Self {
         Self {
             id,
-            handle: handle.into(),
+            handle,
             offset,
             len,
         }
-    }
-
-    pub fn from_string(id: u32, handle: impl Into<String>, offset: u64, len: u32) -> Self {
-        Self::new(id, Bytes::from(handle.into()), offset, len)
     }
 
     /// Deserialize from Bytes with zero-copy handle.
@@ -43,19 +38,6 @@ impl Read {
             offset,
             len,
         })
-    }
-
-    /// Get handle as string (lossy UTF-8 conversion for display/logging).
-    pub fn handle_str(&self) -> std::borrow::Cow<'_, str> {
-        String::from_utf8_lossy(&self.handle)
-    }
-
-    pub fn handle_string(&self) -> String {
-        self.handle_str().into_owned()
-    }
-
-    pub fn into_handle_string(self) -> String {
-        String::from_utf8_lossy(&self.handle).into_owned()
     }
 }
 
