@@ -10,6 +10,9 @@ The main idea of the project is to provide an implementation for interacting wit
 - [Client example](https://github.com/AspectUnk/russh-sftp/blob/master/examples/client.rs)
 - [Simple server](https://github.com/AspectUnk/russh-sftp/blob/master/examples/server.rs)
 
+## Migration note
+`server::Handler` remains compatible with string handles and `Vec<u8>` write data. To preserve opaque handles and write payloads as `bytes::Bytes`, implement `server::Handler<bytes::Bytes, bytes::Bytes>` and start the subsystem with `server::run_bytes`.
+
 ## What's ready?
 - [x] Basic packets
 - [x] Extended packets
