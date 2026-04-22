@@ -1,3 +1,5 @@
+use bytes::Bytes;
+
 use crate::{error::Error, ser};
 
 pub const LIMITS: &str = "limits@openssh.com";
@@ -7,6 +9,8 @@ pub const STATVFS: &str = "statvfs@openssh.com";
 
 macro_rules! impl_try_into_bytes {
     ($struct:ty) => {
+        // TODO: Change to TryInto<Bytes> to avoid the .to_vec() copy.
+        // Requires changing Extended.data from Vec<u8> to Bytes (breaking change).
         impl TryInto<Vec<u8>> for $struct {
             type Error = Error;
 
@@ -35,7 +39,9 @@ impl_try_into_bytes!(HardlinkExtension);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FsyncExtension {
-    pub handle: String,
+    #[serde(deserialize_with = "crate::de::bytes_deserialize")]
+    #[serde(serialize_with = "crate::ser::bytes_serialize")]
+    pub handle: Bytes,
 }
 
 impl_try_into_bytes!(FsyncExtension);

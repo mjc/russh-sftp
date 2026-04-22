@@ -1,6 +1,8 @@
+use bytes::Buf;
 use thiserror::Error;
 
 use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+use crate::{buf::TryBuf, error::Error as ProtocolError};
 
 /// Error Codes for SSH_FXP_STATUS
 #[derive(Debug, Error, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -40,6 +42,27 @@ pub enum StatusCode {
     OpUnsupported = 8,
 }
 
+impl TryFrom<u32> for StatusCode {
+    type Error = ProtocolError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Ok),
+            1 => Ok(Self::Eof),
+            2 => Ok(Self::NoSuchFile),
+            3 => Ok(Self::PermissionDenied),
+            4 => Ok(Self::Failure),
+            5 => Ok(Self::BadMessage),
+            6 => Ok(Self::NoConnection),
+            7 => Ok(Self::ConnectionLost),
+            8 => Ok(Self::OpUnsupported),
+            _ => Err(ProtocolError::BadMessage(format!(
+                "unknown status code {value}"
+            ))),
+        }
+    }
+}
+
 /// Implementation for SSH_FXP_STATUS as defined in the specification draft
 /// <https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7>
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +71,17 @@ pub struct Status {
     pub status_code: StatusCode,
     pub error_message: String,
     pub language_tag: String,
+}
+
+impl Status {
+    pub fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, ProtocolError> {
+        Ok(Self {
+            id: input.try_get_u32()?,
+            status_code: StatusCode::try_from(input.try_get_u32()?)?,
+            error_message: input.try_get_string()?,
+            language_tag: input.try_get_string()?,
+        })
+    }
 }
 
 impl_request_id!(Status);
