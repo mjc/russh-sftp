@@ -8,8 +8,7 @@ use crate::error::Error;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Write {
     pub id: u32,
-    /// File handle (opaque bytes, use `handle_str()` for display).
-    /// Zero-copy from packet buffer.
+    /// File handle (opaque bytes). Zero-copy from packet buffer.
     #[serde(deserialize_with = "crate::de::bytes_deserialize")]
     #[serde(serialize_with = "crate::ser::bytes_serialize")]
     pub handle: Bytes,
@@ -20,17 +19,13 @@ pub struct Write {
 }
 
 impl Write {
-    pub fn new(id: u32, handle: impl Into<Bytes>, offset: u64, data: impl Into<Bytes>) -> Self {
+    pub fn new(id: u32, handle: Bytes, offset: u64, data: Bytes) -> Self {
         Self {
             id,
-            handle: handle.into(),
+            handle,
             offset,
-            data: data.into(),
+            data,
         }
-    }
-
-    pub fn from_string_vec(id: u32, handle: impl Into<String>, offset: u64, data: Vec<u8>) -> Self {
-        Self::new(id, Bytes::from(handle.into()), offset, Bytes::from(data))
     }
 
     /// Zero-copy deserialization from Bytes.
@@ -46,25 +41,6 @@ impl Write {
             offset,
             data,
         })
-    }
-
-    /// Get handle as string (lossy UTF-8 conversion for display/logging).
-    pub fn handle_str(&self) -> std::borrow::Cow<'_, str> {
-        String::from_utf8_lossy(&self.handle)
-    }
-
-    pub fn handle_string(&self) -> String {
-        self.handle_str().into_owned()
-    }
-
-    pub fn data_vec(&self) -> Vec<u8> {
-        self.data.to_vec()
-    }
-
-    pub fn into_parts_legacy(self) -> (u32, String, u64, Vec<u8>) {
-        let handle = String::from_utf8_lossy(&self.handle).into_owned();
-        let data = self.data.to_vec();
-        (self.id, handle, self.offset, data)
     }
 }
 
