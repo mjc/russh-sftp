@@ -36,10 +36,15 @@ env_logger = "0.11"
 anyhow = "1.0"
 criterion = { version = "0.5", features = ["async_tokio"] }
 futures = "0.3"
+iai-callgrind = "0.16.1"
 
 [features]
 async-trait = ["dep:async-trait"]
 
 [[bench]]
 name = "upload_benchmark"
+harness = false
+
+[[bench]]
+name = "packet_iai"
 harness = false
