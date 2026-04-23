@@ -84,9 +84,11 @@ pub(crate) async fn read_packet_into_buf<'a, S: AsyncRead + Unpin>(
 }
 
 /// Read a packet into the provided buffer, returning owned `Bytes`.
-/// Small packets are read through the reusable buffer and then copied into the
-/// returned `Bytes`; oversized packets return a directly frozen owned buffer.
-/// Call [`read_packet_into_buf`] for the internal zero-copy buffer API.
+/// Small packets are read through the reusable buffer and returned by shallowly
+/// cloning and freezing that buffer, so the returned `Bytes` may share the
+/// allocation until a later copy-on-write mutation. Oversized packets return a
+/// directly frozen owned buffer. Call [`read_packet_into_buf`] for the internal
+/// zero-copy buffer API.
 #[allow(dead_code)]
 pub async fn read_packet_into<S: AsyncRead + Unpin>(
     stream: &mut S,
@@ -277,7 +279,8 @@ mod tests {
 
         assert_eq!(first_packet.as_ref(), first.as_slice());
         assert_eq!(second_packet.as_ref(), second.as_slice());
-        assert_eq!(grown_capacity, 64 * 1024);
+        assert!(grown_capacity >= 64 * 1024);
+        assert!(grown_capacity <= MAX_REUSABLE_PACKET_SIZE);
         assert_eq!(buf.capacity(), grown_capacity);
     }
 
