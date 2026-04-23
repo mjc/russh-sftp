@@ -8,13 +8,10 @@ use crate::protocol::{
 
 /// Server handler for each client. This is `async_trait`.
 ///
-/// The default handler shape receives opaque handles and write payloads as
-/// [`bytes::Bytes`] so the server hot path can preserve the packet buffers.
-/// The type parameters remain available for adapter code that wants to name an
-/// older string/vector shape, but [`crate::server::run`] uses the default
-/// byte-preserving handler shape.
+/// Opaque handles and write payloads are passed as [`bytes::Bytes`] so the
+/// server hot path can preserve packet buffers.
 #[cfg_attr(feature = "async-trait", async_trait::async_trait)]
-pub trait Handler<HandleT = Bytes, WriteDataT = Bytes>: Sized {
+pub trait Handler: Sized {
     /// The type must have an `Into<StatusCode>`
     /// implementation because a response must be sent
     /// to any request, even if completed by error.
@@ -53,7 +50,7 @@ pub trait Handler<HandleT = Bytes, WriteDataT = Bytes>: Sized {
     fn close(
         &mut self,
         id: u32,
-        handle: HandleT,
+        handle: Bytes,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
@@ -64,7 +61,7 @@ pub trait Handler<HandleT = Bytes, WriteDataT = Bytes>: Sized {
     fn read(
         &mut self,
         id: u32,
-        handle: HandleT,
+        handle: Bytes,
         offset: u64,
         len: u32,
     ) -> impl Future<Output = Result<Data, Self::Error>> + Send {
@@ -77,9 +74,9 @@ pub trait Handler<HandleT = Bytes, WriteDataT = Bytes>: Sized {
     fn write(
         &mut self,
         id: u32,
-        handle: HandleT,
+        handle: Bytes,
         offset: u64,
-        data: WriteDataT,
+        data: Bytes,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
@@ -101,7 +98,7 @@ pub trait Handler<HandleT = Bytes, WriteDataT = Bytes>: Sized {
     fn fstat(
         &mut self,
         id: u32,
-        handle: HandleT,
+        handle: Bytes,
     ) -> impl Future<Output = Result<Attrs, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
@@ -124,7 +121,7 @@ pub trait Handler<HandleT = Bytes, WriteDataT = Bytes>: Sized {
     fn fsetstat(
         &mut self,
         id: u32,
-        handle: HandleT,
+        handle: Bytes,
         attrs: FileAttributes,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
         let err = self.unimplemented();
@@ -148,7 +145,7 @@ pub trait Handler<HandleT = Bytes, WriteDataT = Bytes>: Sized {
     fn readdir(
         &mut self,
         id: u32,
-        handle: HandleT,
+        handle: Bytes,
     ) -> impl Future<Output = Result<Name, Self::Error>> + Send {
         let err = self.unimplemented();
         async { Err(err) }
