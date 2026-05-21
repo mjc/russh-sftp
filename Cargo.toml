@@ -30,7 +30,7 @@ log = "0.4"
 flurry = "0.5"
 
 [dev-dependencies]
-russh = "0.60.1"
+russh = { git = "https://github.com/Eugeny/russh", branch = "main" }
 rand = "0.10.1"
 env_logger = "0.11"
 anyhow = "1.0"
