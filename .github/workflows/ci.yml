@@ -79,7 +79,9 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
       - name: Run Cargo Test
-        run: cargo test -r --all-targets --all-features
+        run: cargo test -r --tests --all-features
+      - name: Build examples
+        run: cargo build --examples --all-features
 
   docs:
     name: Build docs

@@ -38,6 +38,8 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # see deny.toml
+          ignore: RUSTSEC-2023-0071
 
   cargo-deny:
     name: cargo-deny
