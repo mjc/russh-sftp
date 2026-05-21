@@ -165,27 +165,42 @@ where
     E: fmt::Display + Send,
 {
     tokio::spawn(async move {
-        let mut read_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
-        let mut write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
-
-        loop {
-            match process_handler_with_sender(
-                &mut stream,
-                &mut send_bytes,
-                &mut handler,
-                &mut read_buf,
-                &mut write_buf,
-            )
-            .await
-            {
-                Err(Error::UnexpectedEof) => break,
-                Err(err) => warn!("{}", err),
-                Ok(_) => (),
-            }
-        }
-
-        debug!("sftp stream ended");
+        serve_with_sender(&mut stream, &mut send_bytes, &mut handler).await;
     });
+}
+
+/// Serve SFTP requests on an existing task and send responses as owned bytes.
+///
+/// Unlike [`run_with_sender`], this does not spawn and can therefore be used
+/// with readers that borrow from an owned transport kept by the caller.
+pub async fn serve_with_sender<S, H, F, Fut, E>(stream: &mut S, send_bytes: &mut F, handler: &mut H)
+where
+    S: AsyncRead + Unpin,
+    H: Handler + Send,
+    F: FnMut(Bytes) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+    E: fmt::Display,
+{
+    let mut read_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+    let mut write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+
+    loop {
+        match process_handler_with_sender(
+            stream,
+            send_bytes,
+            handler,
+            &mut read_buf,
+            &mut write_buf,
+        )
+        .await
+        {
+            Err(Error::UnexpectedEof) => break,
+            Err(err) => warn!("{}", err),
+            Ok(_) => (),
+        }
+    }
+
+    debug!("sftp stream ended");
 }
 
 #[cfg(test)]
