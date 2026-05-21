@@ -39,19 +39,6 @@ impl SftpSession {
         Self::new_with_config(stream, Config::default()).await
     }
 
-    /// Creates a new session with timeout opt before the first request
-    #[deprecated(note = "use SftpSession::new_with_config with Config::req_timeout_secs instead")]
-    pub async fn new_opts<S>(stream: S, timeout: Option<u64>) -> SftpResult<Self>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
-        let mut cfg = Config::default();
-        if let Some(secs) = timeout {
-            cfg.request_timeout_secs = secs;
-        }
-        Self::new_with_config(stream, cfg).await
-    }
-
     /// Creates a new session with custom configuration
     pub async fn new_with_config<S>(stream: S, cfg: Config) -> SftpResult<Self>
     where

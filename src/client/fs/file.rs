@@ -8,7 +8,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf},
-    runtime::Handle,
     sync::oneshot,
 };
 
@@ -139,14 +138,7 @@ impl Drop for File {
             return;
         }
 
-        if let Ok(handle) = Handle::try_current() {
-            let session = self.session.clone();
-            let file_handle = self.handle.clone();
-
-            handle.spawn(async move {
-                let _ = session.close(file_handle).await;
-            });
-        }
+        let _ = self.session.close_nowait(std::mem::take(&mut self.handle));
     }
 }
 
