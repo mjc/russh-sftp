@@ -1,6 +1,9 @@
 mod handler;
 
+use bytes::Bytes;
 use bytes::BytesMut;
+use std::fmt;
+use std::future::Future;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 pub use self::handler::Handler;
@@ -90,6 +93,43 @@ where
     Ok(())
 }
 
+async fn process_handler_with_sender<H, S, F, Fut, E>(
+    stream: &mut S,
+    send_bytes: &mut F,
+    handler: &mut H,
+    read_buf: &mut BytesMut,
+    write_buf: &mut BytesMut,
+) -> Result<(), Error>
+where
+    H: Handler + Send,
+    S: AsyncRead + Unpin,
+    F: FnMut(Bytes) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+    E: fmt::Display,
+{
+    let mut packet_buf = read_packet_into_buf(stream, read_buf).await?;
+
+    let response = match Packet::try_from(packet_buf.as_mut_bytes()) {
+        Ok(request) => process_request(request, handler).await,
+        Err(_) => Packet::error(0, StatusCode::BadMessage),
+    };
+
+    if let Err(err) = serialize_packet_into_buf(response, write_buf) {
+        reset_write_buf_if_oversized(write_buf);
+        return Err(err);
+    }
+
+    send_bytes(write_buf.split().freeze())
+        .await
+        .map_err(|err| Error::IO(err.to_string()))?;
+
+    if write_buf.capacity() > MAX_REUSABLE_WRITE_BUF_SIZE {
+        *write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+    }
+
+    Ok(())
+}
+
 /// Run processing stream as SFTP using opaque byte handles and write payloads.
 pub async fn run<S, H>(mut stream: S, mut handler: H)
 where
@@ -112,12 +152,49 @@ where
     });
 }
 
+/// Run processing stream as SFTP and send serialized responses as owned bytes.
+///
+/// This lets integrations with an owned-bytes transport avoid copying the
+/// serialized packet through an `AsyncWrite` adapter.
+pub async fn run_with_sender<S, H, F, Fut, E>(mut stream: S, mut send_bytes: F, mut handler: H)
+where
+    S: AsyncRead + Unpin + Send + 'static,
+    H: Handler + Send + 'static,
+    F: FnMut(Bytes) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<(), E>> + Send,
+    E: fmt::Display + Send,
+{
+    tokio::spawn(async move {
+        let mut read_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+        let mut write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+
+        loop {
+            match process_handler_with_sender(
+                &mut stream,
+                &mut send_bytes,
+                &mut handler,
+                &mut read_buf,
+                &mut write_buf,
+            )
+            .await
+            {
+                Err(Error::UnexpectedEof) => break,
+                Err(err) => warn!("{}", err),
+                Ok(_) => (),
+            }
+        }
+
+        debug!("sftp stream ended");
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{Status, Write};
-    use bytes::Bytes;
+    use crate::protocol::{Init, Status, Version, Write};
+    use bytes::{Buf, Bytes};
     use std::future::Future;
+    use tokio::io::AsyncWriteExt;
 
     fn ok_status(id: u32) -> Status {
         Status {
@@ -183,5 +260,34 @@ mod tests {
             handler.data.as_ref().map(Bytes::as_ref),
             Some(&b"bytes-data"[..])
         );
+    }
+
+    #[tokio::test]
+    async fn run_with_sender_emits_owned_response_bytes() {
+        let (mut client, server) = tokio::io::duplex(1024);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let mut request = BytesMut::new();
+
+        serialize_packet_into_buf(Packet::Init(Init::new()), &mut request).unwrap();
+
+        run_with_sender(
+            server,
+            move |bytes| {
+                let tx = tx.clone();
+                async move { tx.send(bytes).await }
+            },
+            BytesHandler::default(),
+        )
+        .await;
+
+        client.write_all(&request).await.unwrap();
+        let mut response = rx.recv().await.expect("response bytes");
+        drop(client);
+
+        response.advance(4);
+        assert!(matches!(
+            Packet::try_from(&mut response),
+            Ok(Packet::Version(Version { .. }))
+        ));
     }
 }
