@@ -28,6 +28,7 @@ mod version;
 mod write;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use std::borrow::Cow;
 
 use crate::{buf::TryBuf, error::Error, ser, utils::MAX_PACKET_SIZE};
 
@@ -180,17 +181,22 @@ impl Packet {
         }
     }
 
-    pub fn status(id: u32, status_code: StatusCode, msg: &str, tag: &str) -> Self {
+    pub fn status(
+        id: u32,
+        status_code: StatusCode,
+        msg: impl Into<Cow<'static, str>>,
+        tag: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Packet::Status(Status {
             id,
             status_code,
-            error_message: msg.to_string().into(),
-            language_tag: tag.to_string().into(),
+            error_message: msg.into(),
+            language_tag: tag.into(),
         })
     }
 
     pub fn error(id: u32, status_code: StatusCode) -> Self {
-        Self::status(id, status_code, &status_code.to_string(), "en-US")
+        Self::status(id, status_code, status_code.to_string(), "en-US")
     }
 }
 
