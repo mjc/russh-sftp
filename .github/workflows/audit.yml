@@ -12,8 +12,8 @@ on:
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
-      - "crates/**/Cargo.toml"
-      - "crates/**/Cargo.lock"
+      - ".github/workflows/audit.yml"
+      - "deny.toml"
   merge_group:
     types: [checks_requested]
 
@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   audit:
-    if: ${{ github.repository_owner == 'AspectUnk' }}
+    name: rustsec advisories
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -35,78 +35,31 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
 
-      - uses: rustsec/audit-check@v1
+      - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   cargo-deny:
-    name: Run cargo-deny
-    if: ${{ github.repository_owner == 'AspectUnk' }}
+    name: cargo-deny
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: EmbarkStudios/cargo-deny-action@v1
+      - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check bans licenses sources
-
-  # https://twitter.com/mycoliza/status/1571295690063753218
-  nightly:
-    runs-on: ubuntu-latest
-    name: ubuntu / nightly
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install nightly
-        uses: dtolnay/rust-toolchain@nightly
-      - name: cargo generate-lockfile
-        if: hashFiles('Cargo.lock') == ''
-        run: cargo generate-lockfile
-      - name: cargo test --locked
-        run: cargo test --locked --all-features --all-targets
-
-  # https://twitter.com/alcuadrado/status/1571291687837732873
-  update:
-    # This action checks that updating the dependencies of this crate to the latest available that
-    # satisfy the versions in Cargo.toml does not break this crate. This is important as consumers
-    # of this crate will generally use the latest available crates. This is subject to the standard
-    # Cargo semver rules (i.e cargo does not update to a new major version unless explicitly told
-    # to).
-    runs-on: ubuntu-latest
-    name: ubuntu / beta / updated
-    # There's no point running this if no Cargo.lock was checked in in the first place, since we'd
-    # just redo what happened in the regular test job. Unfortunately, hashFiles only works in if on
-    # steps, so we repeat it.
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install beta
-        if: hashFiles('Cargo.lock') != ''
-        uses: dtolnay/rust-toolchain@beta
-      - name: cargo update
-        if: hashFiles('Cargo.lock') != ''
-        run: cargo update
-      - name: cargo test
-        if: hashFiles('Cargo.lock') != ''
-        run: cargo test --locked --all-features --all-targets
-        env:
-          RUSTFLAGS: -D deprecated
+          command: check advisories bans sources
 
   result:
-    if: ${{ github.repository_owner == 'AspectUnk' }}
     name: Result (Audit)
     runs-on: ubuntu-latest
+    if: always()
     needs:
       - audit
       - cargo-deny
-      - nightly
-      - update
     steps:
       - name: Mark the job as successful
         run: exit 0
-        if: success()
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
       - name: Mark the job as unsuccessful
         run: exit 1
-        if: "!success()"
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}

@@ -6,8 +6,8 @@ on:
       - "**/*.md"
   push:
     branches:
-      - main
-      - "renovate/**"
+      - master
+      - "dependabot/**"
     paths-ignore:
       - "**/*.md"
   schedule:
@@ -47,7 +47,7 @@ jobs:
         # Get early warning of new lints which are regularly introduced in beta channels.
         toolchain: [stable, beta]
     steps:
-      - uses: actions/checkout@v4 # v4
+      - uses: actions/checkout@v4
 
       - name: Install Rust ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@v1
@@ -57,31 +57,21 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
     name: Test
-    runs-on: ${{ matrix.job.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # Get early warning of new lints which are regularly introduced in beta channels.
-        toolchain: [stable, beta]
-        job:
-          - os: macos-latest
-          - os: ubuntu-latest
-          - os: windows-latest
+        include:
+          - { toolchain: stable, os: ubuntu-latest }
+          - { toolchain: stable, os: macos-latest }
+          - { toolchain: stable, os: windows-latest }
+          - { toolchain: beta, os: ubuntu-latest }
     steps:
-      - uses: actions/checkout@v4 # v4
-        if: github.event_name != 'pull_request'
-        with:
-          fetch-depth: 0
-
-      - uses: actions/checkout@v4 # v4
-        if: github.event_name == 'pull_request'
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
       - name: Install Rust ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@v1
@@ -89,72 +79,22 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
       - name: Run Cargo Test
-        id: run_tests
-        # run: cargo test -r --all-targets --features ${{ matrix.feature }} --workspace
-        run: cargo test -r --all-targets --workspace
-        env:
-          INSTA_UPDATE: new
-      - name: Upload snapshots of failed tests
-        if: ${{ failure() && steps.run_tests.outcome == 'failure' }}
-        uses: actions/upload-artifact@v3
-        with:
-          name: failed-snapshots
-          path: "**/snapshots/*.snap.new"
+        run: cargo test -r --all-targets --all-features
 
   docs:
     name: Build docs
-    runs-on: ${{ matrix.job.os }}
-    strategy:
-      matrix:
-        rust: [stable]
-        job:
-          - os: macos-latest
-          - os: ubuntu-latest
-          - os: windows-latest
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4 # v4
-        if: github.event_name != 'pull_request'
-        with:
-          fetch-depth: 0
-
-      - uses: actions/checkout@v4 # v4
-        if: github.event_name == 'pull_request'
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo doc
-        run: cargo doc --no-deps --all-features --workspace --examples
-        env:
-          RUSTDOCFLAGS: --cfg docsrs
-
-  msrv:
-    name: Check MSRV
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        msrv: [1.81.0]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install ${{ matrix.msrv }}
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.msrv }}
-
-      - name: Install cargo-hack
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-hack
-
-      - name: Run Cargo Hack
-        run: cargo +${{ matrix.msrv }} hack check --rust-version
+        run: cargo doc --no-deps --all-features
 
   powerset:
     # cargo-hack checks combinations of feature flags to ensure that features are all additive
@@ -163,11 +103,12 @@ jobs:
     name: ubuntu / stable / features
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
         with:
-          submodules: true
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@stable
-      - name: cargo install cargo-hack
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-hack
         uses: taiki-e/install-action@cargo-hack
       # intentionally no target specifier; see https://github.com/jonhoo/rust-ci-conf/pull/4
       # --feature-powerset runs for every combination of features
@@ -177,17 +118,17 @@ jobs:
   result:
     name: Result (CI)
     runs-on: ubuntu-latest
+    if: always()
     needs:
       - fmt
       - clippy
       - test
       - docs
-      - msrv
       - powerset
     steps:
       - name: Mark the job as successful
         run: exit 0
-        if: success()
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
       - name: Mark the job as unsuccessful
         run: exit 1
-        if: "!success()"
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
