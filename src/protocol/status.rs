@@ -1,4 +1,5 @@
 use bytes::Buf;
+use std::borrow::Cow;
 use thiserror::Error;
 
 use super::{impl_packet_for, impl_request_id, Packet, RequestId};
@@ -69,8 +70,8 @@ impl TryFrom<u32> for StatusCode {
 pub struct Status {
     pub id: u32,
     pub status_code: StatusCode,
-    pub error_message: String,
-    pub language_tag: String,
+    pub error_message: Cow<'static, str>,
+    pub language_tag: Cow<'static, str>,
 }
 
 impl Status {
@@ -78,8 +79,8 @@ impl Status {
         Ok(Self {
             id: input.try_get_u32()?,
             status_code: StatusCode::try_from(input.try_get_u32()?)?,
-            error_message: input.try_get_string()?,
-            language_tag: input.try_get_string()?,
+            error_message: Cow::Owned(input.try_get_string()?),
+            language_tag: Cow::Owned(input.try_get_string()?),
         })
     }
 }

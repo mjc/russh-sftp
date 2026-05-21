@@ -184,8 +184,8 @@ impl Packet {
         Packet::Status(Status {
             id,
             status_code,
-            error_message: msg.to_string(),
-            language_tag: tag.to_string(),
+            error_message: msg.to_string().into(),
+            language_tag: tag.to_string().into(),
         })
     }
 
@@ -486,8 +486,8 @@ mod tests {
         let original = Status {
             id: 9,
             status_code: StatusCode::Failure,
-            error_message: "failed".to_string(),
-            language_tag: "en-US".to_string(),
+            error_message: "failed".into(),
+            language_tag: "en-US".into(),
         };
 
         assert_packet_roundtrip(Packet::Status(original), |packet| {

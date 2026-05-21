@@ -36,8 +36,8 @@ fn status_fixture(size: usize) -> Status {
     Status {
         id: 45,
         status_code: StatusCode::Failure,
-        error_message: "e".repeat(size),
-        language_tag: "en-US".to_string(),
+        error_message: "e".repeat(size).into(),
+        language_tag: "en-US".into(),
     }
 }
 
