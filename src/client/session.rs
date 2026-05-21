@@ -181,8 +181,11 @@ impl SftpSession {
 
     /// Returns an iterator over the entries within a directory.
     pub async fn read_dir<P: Into<String>>(&self, path: P) -> SftpResult<ReadDir> {
-        let mut files = vec![];
+        let path: String = path.into();
+        let parent = Arc::from(path.as_str());
+
         let handle = self.session.opendir(path).await?.handle;
+        let mut files = vec![];
 
         loop {
             match self.session.readdir(handle.as_str()).await {
@@ -202,6 +205,7 @@ impl SftpSession {
         self.session.close(handle).await?;
 
         Ok(ReadDir {
+            parent,
             entries: files.into(),
         })
     }
