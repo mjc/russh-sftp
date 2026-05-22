@@ -319,6 +319,33 @@ fn checked_data_packet_payload_len(data: &Data) -> Result<usize, Error> {
     Ok(length)
 }
 
+pub(crate) fn serialize_read_packet(
+    id: u32,
+    handle: &Bytes,
+    offset: u64,
+    len: u32,
+) -> Result<Bytes, Error> {
+    let payload_len = checked_add_len(1, 4)?;
+    let payload_len = checked_add_len(payload_len, 4)?;
+    let payload_len = checked_add_len(payload_len, handle.len())?;
+    let payload_len = checked_add_len(payload_len, 8)?;
+    let payload_len = checked_add_len(payload_len, 4)?;
+    let packet_len = checked_packet_length(payload_len)?;
+
+    let mut buf = BytesMut::with_capacity(4 + payload_len);
+    buf.put_u32(packet_len);
+    buf.put_u8(SSH_FXP_READ);
+    buf.put_u32(id);
+    buf.put_u32(
+        u32::try_from(handle.len())
+            .map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))?,
+    );
+    buf.put_slice(handle);
+    buf.put_u64(offset);
+    buf.put_u32(len);
+    Ok(buf.freeze())
+}
+
 pub(crate) fn serialize_packet_into_buf(packet: Packet, buf: &mut BytesMut) -> Result<(), Error> {
     buf.clear();
 
@@ -802,6 +829,24 @@ mod tests {
         );
         assert_eq!(packet_bytes[4], SSH_FXP_DATA);
         assert_eq!(&packet_bytes[5..], &payload_bytes[..]);
+    }
+
+    #[test]
+    fn serialize_read_packet_matches_generic_wire_shape() {
+        let handle = Bytes::from_static(b"handle");
+        let packet = Packet::Read(Read {
+            id: 9,
+            handle: handle.clone(),
+            offset: 1234,
+            len: 5678,
+        });
+        let mut packet_buf = BytesMut::new();
+
+        let generic = serialize_packet_into(packet, &mut packet_buf).expect("serialize packet");
+        let specialized =
+            serialize_read_packet(9, &handle, 1234, 5678).expect("serialize read packet");
+
+        assert_eq!(specialized, generic);
     }
 
     #[test]

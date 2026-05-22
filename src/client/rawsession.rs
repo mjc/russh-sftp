@@ -21,9 +21,10 @@ use crate::{
         self, FsyncExtension, HardlinkExtension, LimitsExtension, Statvfs, StatvfsExtension,
     },
     protocol::{
-        Attrs, Close, Data, Extended, ExtendedReply, FSetStat, FileAttributes, Fstat, Handle, Init,
-        Lstat, MkDir, Name, Open, OpenDir, OpenFlags, Packet, Read, ReadDir, ReadLink, RealPath,
-        Remove, Rename, RmDir, SetStat, Stat, Status, StatusCode, Symlink, Version, Write,
+        serialize_read_packet, Attrs, Close, Data, Extended, ExtendedReply, FSetStat,
+        FileAttributes, Fstat, Handle, Init, Lstat, MkDir, Name, Open, OpenDir, OpenFlags, Packet,
+        ReadDir, ReadLink, RealPath, Remove, Rename, RmDir, SetStat, Stat, Status, StatusCode,
+        Symlink, Version, Write,
     },
 };
 
@@ -204,11 +205,15 @@ impl RawSftpSession {
     }
 
     async fn send(&self, id: Option<u32>, packet: Packet) -> SftpResult<Packet> {
+        let bytes = Bytes::try_from(packet)?;
+        self.send_bytes(id, bytes).await
+    }
+
+    async fn send_bytes(&self, id: Option<u32>, bytes: Bytes) -> SftpResult<Packet> {
         if self.tx.is_closed() {
             return Err(Error::UnexpectedBehavior("session closed".into()));
         }
 
-        let bytes = Bytes::try_from(packet)?;
         let (tx, rx) = oneshot::channel();
 
         self.requests.insert(id, tx);
@@ -331,18 +336,8 @@ impl RawSftpSession {
         }
 
         let id = self.use_next_id();
-        let result = self
-            .send(
-                Some(id),
-                Read {
-                    id,
-                    handle,
-                    offset,
-                    len,
-                }
-                .into(),
-            )
-            .await?;
+        let bytes = serialize_read_packet(id, &handle, offset, len)?;
+        let result = self.send_bytes(Some(id), bytes).await?;
 
         into_with_status!(result, Data)
     }
