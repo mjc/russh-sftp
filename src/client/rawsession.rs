@@ -194,7 +194,7 @@ impl RawSftpSession {
     }
 
     /// Set the maximum response time in seconds.
-    /// Default: 10 seconds
+    /// Default: 10 seconds. A value of 0 disables request timeouts.
     pub async fn set_timeout(&self, secs: u64) {
         *self.options.timeout.write().await = secs;
     }
@@ -223,6 +223,11 @@ impl RawSftpSession {
         }
 
         let timeout = *self.options.timeout.read().await;
+        if timeout == 0 {
+            return rx
+                .await
+                .map_err(|_| Error::UnexpectedBehavior("request receiver dropped".into()))?;
+        }
 
         match time::timeout(Duration::from_secs(timeout), rx).await {
             Ok(Ok(result)) => result,
