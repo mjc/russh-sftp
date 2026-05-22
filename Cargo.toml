@@ -28,6 +28,7 @@ chrono = "0.4"
 bytes = "1.10"
 log = "0.4"
 flurry = "0.5"
+futures = "0.3"
 
 [dev-dependencies]
 russh = { git = "https://github.com/mjc/russh.git", branch = "main" }
@@ -35,7 +36,6 @@ rand = "0.10.1"
 env_logger = "0.11"
 anyhow = "1.0"
 criterion = { version = "0.5", features = ["async_tokio"] }
-futures = "0.3"
 iai-callgrind = "0.16.1"
 
 [features]

@@ -133,8 +133,8 @@ impl russh_sftp::server::Handler for SftpSession {
         Ok(Status {
             id,
             status_code: StatusCode::Ok,
-            error_message: "Ok".to_string(),
-            language_tag: "en-US".to_string(),
+            error_message: "Ok".into(),
+            language_tag: "en-US".into(),
         })
     }
 
@@ -175,8 +175,8 @@ impl russh_sftp::server::Handler for SftpSession {
         Ok(Status {
             id,
             status_code: StatusCode::Ok,
-            error_message: "Ok".to_string(),
-            language_tag: "en-US".to_string(),
+            error_message: "Ok".into(),
+            language_tag: "en-US".into(),
         })
     }
 
@@ -185,8 +185,8 @@ impl russh_sftp::server::Handler for SftpSession {
         Ok(Status {
             id,
             status_code: StatusCode::Ok,
-            error_message: "Ok".to_string(),
-            language_tag: "en-US".to_string(),
+            error_message: "Ok".into(),
+            language_tag: "en-US".into(),
         })
     }
 
