@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use flurry::HashMap;
+use dashmap::DashMap;
 use std::{
     future::Future,
     sync::{
@@ -10,7 +10,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    sync::{mpsc, RwLock},
+    sync::{mpsc, oneshot, RwLock},
     time,
 };
 
@@ -28,7 +28,7 @@ use crate::{
 };
 
 pub type SftpResult<T> = Result<T, Error>;
-type SharedRequests = HashMap<Option<u32>, mpsc::Sender<SftpResult<Packet>>>;
+type SharedRequests = DashMap<Option<u32>, oneshot::Sender<SftpResult<Packet>>>;
 
 pub(crate) struct SessionInner {
     version: Option<u32>,
@@ -37,7 +37,7 @@ pub(crate) struct SessionInner {
 
 impl SessionInner {
     pub async fn reply(&mut self, id: Option<u32>, packet: Packet) -> SftpResult<()> {
-        if let Some(sender) = self.requests.pin().remove(&id) {
+        if let Some((_, sender)) = self.requests.remove(&id) {
             let validate = if id.is_some() && self.version.is_none() {
                 Err(Error::UnexpectedPacket)
             } else if id.is_none() && self.version.is_some() {
@@ -47,8 +47,8 @@ impl SessionInner {
             };
 
             sender
-                .try_send(validate.clone().map(|_| packet))
-                .map_err(|e| Error::UnexpectedBehavior(e.to_string()))?;
+                .send(validate.clone().map(|_| packet))
+                .map_err(|_| Error::UnexpectedBehavior("request receiver dropped".to_owned()))?;
 
             return validate;
         }
@@ -174,7 +174,7 @@ impl RawSftpSession {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let req_map = Arc::new(HashMap::new());
+        let req_map = Arc::new(DashMap::new());
         let inner = SessionInner {
             version: None,
             requests: req_map.clone(),
@@ -209,24 +209,21 @@ impl RawSftpSession {
         }
 
         let bytes = Bytes::try_from(packet)?;
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, rx) = oneshot::channel();
 
-        self.requests.pin().insert(id, tx);
+        self.requests.insert(id, tx);
         if let Err(err) = self.tx.send(bytes) {
-            self.requests.pin().remove(&id);
+            self.requests.remove(&id);
             return Err(err.into());
         }
 
         let timeout = *self.options.timeout.read().await;
 
-        match time::timeout(Duration::from_secs(timeout), rx.recv()).await {
-            Ok(Some(result)) => result,
-            Ok(None) => {
-                self.requests.pin().remove(&id);
-                Err(Error::UnexpectedBehavior("recv none message".into()))
-            }
+        match time::timeout(Duration::from_secs(timeout), rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(Error::UnexpectedBehavior("request receiver dropped".into())),
             Err(error) => {
-                self.requests.pin().remove(&id);
+                self.requests.remove(&id);
                 Err(error.into())
             }
         }
