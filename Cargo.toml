@@ -29,7 +29,6 @@ chrono = "0.4.44"
 bytes = "1.11.1"
 log = "0.4.29"
 dashmap = "6.1.0"
-flurry = "0.5"
 futures = "0.3.32"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
