@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     future::Future,
     io::{self, SeekFrom},
     pin::Pin,
@@ -6,7 +7,11 @@ use std::{
     task::{ready, Context, Poll},
 };
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
+use futures::{
+    stream::{FuturesUnordered, Stream},
+    FutureExt,
+};
 use tokio::{
     io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf},
     runtime::Handle,
@@ -19,16 +24,37 @@ use crate::{
 };
 
 type StateFn<T> = Option<Pin<Box<dyn Future<Output = io::Result<T>> + Send + Sync + 'static>>>;
+type ReadFuture = Pin<Box<dyn Future<Output = io::Result<ReadResult>> + Send + 'static>>;
 
 const MAX_READ_LENGTH: u64 = 261120;
 const MAX_WRITE_LENGTH: u64 = 261120;
+const DEFAULT_READ_DEPTH: usize = 64;
+
+struct ReadResult {
+    offset: u64,
+    len: u32,
+    data: Option<Bytes>,
+}
 
 struct FileState {
-    f_read: StateFn<Option<Bytes>>,
+    read_pending: FuturesUnordered<ReadFuture>,
+    read_ready: BTreeMap<u64, Bytes>,
+    read_next_offset: u64,
+    read_eof: Option<u64>,
+    read_depth: usize,
     f_seek: StateFn<u64>,
     f_write: StateFn<usize>,
     f_flush: StateFn<()>,
     f_shutdown: StateFn<()>,
+}
+
+impl FileState {
+    fn reset_read(&mut self, offset: u64) {
+        self.read_pending = FuturesUnordered::new();
+        self.read_ready.clear();
+        self.read_next_offset = offset;
+        self.read_eof = None;
+    }
 }
 
 /// Provides high-level methods for interaction with a remote file.
@@ -58,7 +84,11 @@ impl File {
             session,
             handle,
             state: FileState {
-                f_read: None,
+                read_pending: FuturesUnordered::new(),
+                read_ready: BTreeMap::new(),
+                read_next_offset: 0,
+                read_eof: None,
+                read_depth: DEFAULT_READ_DEPTH,
                 f_seek: None,
                 f_write: None,
                 f_flush: None,
@@ -122,53 +152,123 @@ impl AsyncRead for File {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let poll = Pin::new(match self.state.f_read.as_mut() {
-            Some(f) => f,
-            None => {
-                let session = self.session.clone();
-                let max_read_len = self
-                    .extensions
-                    .limits
-                    .as_ref()
-                    .and_then(|l| l.read_len)
-                    .unwrap_or(MAX_READ_LENGTH) as usize;
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
 
-                let file_handle = self.handle.clone();
+        if self.state.read_pending.is_empty()
+            && self.state.read_ready.is_empty()
+            && self.state.read_next_offset != self.pos
+        {
+            let pos = self.pos;
+            self.state.reset_read(pos);
+        }
 
-                let offset = self.pos;
-                let len = if buf.remaining() > max_read_len {
-                    max_read_len
-                } else {
-                    buf.remaining()
-                };
+        let pos = self.pos;
+        if let Some(mut data) = self.state.read_ready.remove(&pos) {
+            let len = data.len().min(buf.remaining());
+            buf.put_slice(&data[..len]);
+            self.pos += len as u64;
 
-                self.state.f_read.get_or_insert(Box::pin(async move {
-                    let result = session.read_bytes(file_handle, offset, len as u32).await;
+            if len < data.len() {
+                data.advance(len);
+                let pos = self.pos;
+                self.state.read_ready.insert(pos, data);
+            }
+
+            return Poll::Ready(Ok(()));
+        }
+
+        let max_read_len = self
+            .extensions
+            .limits
+            .as_ref()
+            .and_then(|l| l.read_len)
+            .unwrap_or(MAX_READ_LENGTH) as usize;
+
+        while self.state.read_eof.is_none() && self.state.read_pending.len() < self.state.read_depth
+        {
+            let session = self.session.clone();
+            let file_handle = self.handle.clone();
+            let offset = self.state.read_next_offset;
+            let len = max_read_len.min(u32::MAX as usize) as u32;
+
+            self.state.read_next_offset += u64::from(len);
+            self.state.read_pending.push(
+                async move {
+                    let result = session.read_bytes(file_handle, offset, len).await;
 
                     match result {
-                        Ok(data) => Ok(Some(data.data)),
+                        Ok(data) => Ok(ReadResult {
+                            offset,
+                            len,
+                            data: Some(data.data),
+                        }),
                         Err(Error::Status(status)) if status.status_code == StatusCode::Eof => {
-                            Ok(None)
+                            Ok(ReadResult {
+                                offset,
+                                len,
+                                data: None,
+                            })
                         }
                         Err(e) => Err(io::Error::other(e.to_string())),
                     }
-                }))
-            }
-        })
-        .poll(cx);
-
-        if poll.is_ready() {
-            self.state.f_read = None;
+                }
+                .boxed(),
+            );
         }
 
-        match poll {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
-            Poll::Ready(Ok(Some(data))) => {
-                self.pos += data.len() as u64;
-                buf.put_slice(&data[..]);
-                Poll::Ready(Ok(()))
+        loop {
+            match Pin::new(&mut self.state.read_pending).poll_next(cx) {
+                Poll::Pending => {
+                    if self.state.read_eof == Some(self.pos) {
+                        return Poll::Ready(Ok(()));
+                    }
+                    return Poll::Pending;
+                }
+                Poll::Ready(None) => {
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Ready(Some(Err(e))) => return Poll::Ready(Err(e)),
+                Poll::Ready(Some(Ok(result))) => {
+                    match result.data {
+                        Some(data) if data.is_empty() => {
+                            self.state.read_eof.get_or_insert(result.offset);
+                        }
+                        Some(data) => {
+                            if data.len() < result.len as usize {
+                                self.state
+                                    .read_eof
+                                    .get_or_insert(result.offset + data.len() as u64);
+                            }
+                            if self.state.read_eof.is_none_or(|eof| result.offset < eof) {
+                                self.state.read_ready.insert(result.offset, data);
+                            }
+                        }
+                        None => {
+                            self.state.read_eof.get_or_insert(result.offset);
+                        }
+                    }
+
+                    let pos = self.pos;
+                    if let Some(mut data) = self.state.read_ready.remove(&pos) {
+                        let len = data.len().min(buf.remaining());
+                        buf.put_slice(&data[..len]);
+                        self.pos += len as u64;
+
+                        if len < data.len() {
+                            data.advance(len);
+                            let pos = self.pos;
+                            self.state.read_ready.insert(pos, data);
+                        }
+
+                        return Poll::Ready(Ok(()));
+                    }
+
+                    if self.state.read_eof == Some(self.pos) && self.state.read_pending.is_empty() {
+                        return Poll::Ready(Ok(()));
+                    }
+                }
             }
         }
     }
@@ -176,6 +276,12 @@ impl AsyncRead for File {
 
 impl AsyncSeek for File {
     fn start_seek(mut self: Pin<&mut Self>, position: io::SeekFrom) -> io::Result<()> {
+        if !self.state.read_pending.is_empty() {
+            return Err(io::Error::other(
+                "read operation is pending, poll it before start_seek",
+            ));
+        }
+
         match self.state.f_seek {
             Some(_) => Err(io::Error::other(
                 "other file operation is pending, call poll_complete before start_seek",
@@ -222,6 +328,8 @@ impl AsyncSeek for File {
             Some(f) => {
                 self.pos = ready!(Pin::new(f).poll(cx))?;
                 self.state.f_seek = None;
+                let pos = self.pos;
+                self.state.reset_read(pos);
                 Poll::Ready(Ok(self.pos))
             }
         }
