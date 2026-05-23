@@ -398,6 +398,39 @@ pub(crate) fn serialize_read_packet(
     Ok(buf.freeze())
 }
 
+pub(crate) fn serialize_write_packet(
+    id: u32,
+    handle: &Bytes,
+    offset: u64,
+    data: &Bytes,
+) -> Result<Bytes, Error> {
+    let write = Write {
+        id,
+        handle: handle.clone(),
+        offset,
+        data: data.clone(),
+    };
+    let payload_len = checked_write_packet_payload_len(&write)?;
+    let packet_len = checked_packet_length(payload_len)?;
+
+    let mut buf = BytesMut::with_capacity(4 + payload_len);
+    buf.put_u32(packet_len);
+    buf.put_u8(SSH_FXP_WRITE);
+    buf.put_u32(id);
+    buf.put_u32(
+        u32::try_from(handle.len())
+            .map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))?,
+    );
+    buf.put_slice(handle);
+    buf.put_u64(offset);
+    buf.put_u32(
+        u32::try_from(data.len())
+            .map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))?,
+    );
+    buf.put_slice(data);
+    Ok(buf.freeze())
+}
+
 pub(crate) fn serialize_packet_split(
     packet: Packet,
     buf: &mut BytesMut,
