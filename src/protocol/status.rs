@@ -75,15 +75,88 @@ pub struct Status {
 }
 
 impl Status {
+    fn decode_common_string<B: Buf + TryBuf>(input: &mut B) -> Result<Cow<'static, str>, ProtocolError> {
+        let bytes = input.try_get_bytes()?;
+
+        if bytes.as_ref() == b"Ok" {
+            return Ok(Cow::Borrowed("Ok"));
+        }
+
+        if bytes.as_ref() == b"en-US" {
+            return Ok(Cow::Borrowed("en-US"));
+        }
+
+        Ok(Cow::Owned(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
     pub fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, ProtocolError> {
         Ok(Self {
             id: input.try_get_u32()?,
             status_code: StatusCode::try_from(input.try_get_u32()?)?,
-            error_message: Cow::Owned(input.try_get_string()?),
-            language_tag: Cow::Owned(input.try_get_string()?),
+            error_message: Self::decode_common_string(input)?,
+            language_tag: Self::decode_common_string(input)?,
         })
     }
 }
 
 impl_request_id!(Status);
 impl_packet_for!(Status);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::{BufMut, Bytes};
+
+    #[test]
+    fn from_bytes_borrows_common_ok_strings() {
+        let mut buf = bytes::BytesMut::new();
+        buf.put_u32(7);
+        buf.put_u32(StatusCode::Ok as u32);
+        buf.put_u32(2);
+        buf.extend_from_slice(b"Ok");
+        buf.put_u32(5);
+        buf.extend_from_slice(b"en-US");
+
+        let mut bytes = buf.freeze();
+        let status = Status::from_bytes(&mut bytes).expect("parse status");
+
+        assert!(matches!(status.error_message, Cow::Borrowed("Ok")));
+        assert!(matches!(status.language_tag, Cow::Borrowed("en-US")));
+    }
+
+    #[test]
+    fn from_bytes_owns_non_common_strings() {
+        let mut buf = bytes::BytesMut::new();
+        buf.put_u32(9);
+        buf.put_u32(StatusCode::Failure as u32);
+        buf.put_u32(6);
+        buf.extend_from_slice(b"broken");
+        buf.put_u32(2);
+        buf.extend_from_slice(b"fr");
+
+        let mut bytes = buf.freeze();
+        let status = Status::from_bytes(&mut bytes).expect("parse status");
+
+        assert!(matches!(status.error_message, Cow::Owned(_)));
+        assert!(matches!(status.language_tag, Cow::Owned(_)));
+        assert_eq!(status.error_message, "broken");
+        assert_eq!(status.language_tag, "fr");
+    }
+
+    #[test]
+    fn from_bytes_handles_invalid_utf8_lossily() {
+        let mut buf = bytes::BytesMut::new();
+        buf.put_u32(1);
+        buf.put_u32(StatusCode::Failure as u32);
+        buf.put_u32(2);
+        buf.extend_from_slice(&[0xFF, 0xFE]);
+        buf.put_u32(5);
+        buf.extend_from_slice(b"en-US");
+
+        let mut bytes: Bytes = buf.freeze();
+        let status = Status::from_bytes(&mut bytes).expect("parse status");
+
+        assert!(status.error_message.contains('\u{FFFD}'));
+        assert!(matches!(status.language_tag, Cow::Borrowed("en-US")));
+    }
+}
