@@ -1,13 +1,15 @@
 mod handler;
+mod reply;
 
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 pub use self::handler::Handler;
+pub use self::reply::StatusReply;
 
 use crate::{
     error::Error,
-    protocol::{Packet, StatusCode, Status, HandlerError},
+    protocol::{Packet, Status, StatusCode},
     utils::read_packet,
 };
 
@@ -15,12 +17,12 @@ macro_rules! into_wrap {
     ($id:expr, $handler:expr, $var:ident; $($arg:ident),*) => {
         match $handler.$var($($var.$arg),*).await {
             Err(err) => {
-                let err: HandlerError = err.into();
+                let StatusReply { status_code, error_message, language_tag } = err.into();
                 Packet::Status(Status {
                     id: $id,
-                    status_code: err.status_code,
-                    error_message: err.error_message,
-                    language_tag: err.language_tag,
+                    status_code,
+                    error_message: error_message.unwrap_or_else(|| status_code.to_string()),
+                    language_tag: language_tag.unwrap_or_else(|| "en-US".to_string()),
                 })
             },
             Ok(packet) => packet.into(),
