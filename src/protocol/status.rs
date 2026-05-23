@@ -1,4 +1,4 @@
-use bytes::Buf;
+use bytes::{Buf, BufMut, BytesMut};
 use std::borrow::Cow;
 use thiserror::Error;
 
@@ -83,7 +83,48 @@ impl Status {
             language_tag: Cow::Owned(input.try_get_string()?),
         })
     }
+
+    pub(crate) fn serialize_into(&self, output: &mut BytesMut) -> Result<(), ProtocolError> {
+        let error_message = self.error_message.as_bytes();
+        let language_tag = self.language_tag.as_bytes();
+
+        output.put_u32(self.id);
+        output.put_u32(self.status_code as u32);
+        output.put_u32(
+            u32::try_from(error_message.len())
+                .map_err(|_| ProtocolError::BadMessage("length exceeds u32::MAX".to_owned()))?,
+        );
+        output.put_slice(error_message);
+        output.put_u32(
+            u32::try_from(language_tag.len())
+                .map_err(|_| ProtocolError::BadMessage("length exceeds u32::MAX".to_owned()))?,
+        );
+        output.put_slice(language_tag);
+
+        Ok(())
+    }
 }
 
 impl_request_id!(Status);
 impl_packet_for!(Status);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialize_into_matches_serde_output() {
+        let status = Status {
+            id: 11,
+            status_code: StatusCode::Ok,
+            error_message: Cow::Borrowed("Ok"),
+            language_tag: Cow::Borrowed("en-US"),
+        };
+
+        let expected = crate::ser::to_bytes(&status).expect("serialize with serde");
+        let mut actual = BytesMut::new();
+        status.serialize_into(&mut actual).expect("serialize manually");
+
+        assert_eq!(actual.freeze(), expected);
+    }
+}
