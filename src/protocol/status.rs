@@ -123,7 +123,9 @@ mod tests {
 
         let expected = crate::ser::to_bytes(&status).expect("serialize with serde");
         let mut actual = BytesMut::new();
-        status.serialize_into(&mut actual).expect("serialize manually");
+        status
+            .serialize_into(&mut actual)
+            .expect("serialize manually");
 
         assert_eq!(actual.freeze(), expected);
     }

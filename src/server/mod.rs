@@ -10,7 +10,9 @@ pub use self::handler::Handler;
 
 use crate::{
     error::Error,
-    protocol::{serialize_packet_into_buf, serialize_packet_split, Packet, StatusCode},
+    protocol::{
+        serialize_packet_into_buf, serialize_packet_split, Packet, SerializedPacket, StatusCode,
+    },
     utils::read_packet_into_buf,
 };
 
@@ -137,6 +139,45 @@ where
     Ok(())
 }
 
+async fn process_handler_with_packet_sender<H, S, F, Fut, E>(
+    stream: &mut S,
+    send_packet: &mut F,
+    handler: &mut H,
+    read_buf: &mut BytesMut,
+    write_buf: &mut BytesMut,
+) -> Result<(), Error>
+where
+    H: Handler + Send,
+    S: AsyncRead + Unpin,
+    F: FnMut(SerializedPacket) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+    E: fmt::Display,
+{
+    let mut packet_buf = read_packet_into_buf(stream, read_buf).await?;
+
+    let response = match Packet::try_from(packet_buf.as_mut_bytes()) {
+        Ok(request) => process_request(request, handler).await,
+        Err(_) => Packet::error(0, StatusCode::BadMessage),
+    };
+
+    let packet = match serialize_packet_split(response, write_buf) {
+        Ok(packet) => packet,
+        Err(err) => {
+            reset_write_buf_if_oversized(write_buf);
+            return Err(err);
+        }
+    };
+
+    if let Err(err) = send_packet(packet).await {
+        reset_write_buf_if_oversized(write_buf);
+        return Err(Error::IO(err.to_string()));
+    }
+
+    reset_write_buf_if_oversized(write_buf);
+
+    Ok(())
+}
+
 /// Run processing stream as SFTP using opaque byte handles and write payloads.
 pub async fn run<S, H>(mut stream: S, mut handler: H)
 where
@@ -176,6 +217,23 @@ where
     });
 }
 
+/// Run processing stream as SFTP and send serialized responses as split-aware packets.
+pub async fn run_with_packet_sender<S, H, F, Fut, E>(
+    mut stream: S,
+    mut send_packet: F,
+    mut handler: H,
+) where
+    S: AsyncRead + Unpin + Send + 'static,
+    H: Handler + Send + 'static,
+    F: FnMut(SerializedPacket) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<(), E>> + Send,
+    E: fmt::Display + Send,
+{
+    tokio::spawn(async move {
+        serve_with_packet_sender(&mut stream, &mut send_packet, &mut handler).await;
+    });
+}
+
 /// Serve SFTP requests on an existing task and send responses as owned bytes.
 ///
 /// Unlike [`run_with_sender`], this does not spawn and can therefore be used
@@ -210,10 +268,44 @@ where
     debug!("sftp stream ended");
 }
 
+/// Serve SFTP requests on an existing task and send split-aware packets.
+pub async fn serve_with_packet_sender<S, H, F, Fut, E>(
+    stream: &mut S,
+    send_packet: &mut F,
+    handler: &mut H,
+) where
+    S: AsyncRead + Unpin,
+    H: Handler + Send,
+    F: FnMut(SerializedPacket) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+    E: fmt::Display,
+{
+    let mut read_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+    let mut write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
+
+    loop {
+        match process_handler_with_packet_sender(
+            stream,
+            send_packet,
+            handler,
+            &mut read_buf,
+            &mut write_buf,
+        )
+        .await
+        {
+            Err(Error::UnexpectedEof) => break,
+            Err(err) => warn!("{}", err),
+            Ok(_) => (),
+        }
+    }
+
+    debug!("sftp stream ended");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{Init, Status, Version, Write};
+    use crate::protocol::{serialize_read_packet, Data, Init, Status, Version, Write};
     use bytes::{Buf, Bytes};
     use std::future::Future;
     use tokio::io::AsyncWriteExt;
@@ -250,6 +342,29 @@ mod tests {
             self.handle = Some(handle);
             self.data = Some(data);
             async move { Ok(ok_status(id)) }
+        }
+    }
+
+    struct ReadHandler {
+        data: Bytes,
+    }
+
+    impl Handler for ReadHandler {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> Self::Error {
+            StatusCode::OpUnsupported
+        }
+
+        fn read(
+            &mut self,
+            id: u32,
+            _handle: Bytes,
+            _offset: u64,
+            _len: u32,
+        ) -> impl Future<Output = Result<Data, Self::Error>> + Send {
+            let data = self.data.clone();
+            async move { Ok(Data { id, data }) }
         }
     }
 
@@ -311,5 +426,47 @@ mod tests {
             Packet::try_from(&mut response),
             Ok(Packet::Version(Version { .. }))
         ));
+    }
+
+    #[tokio::test]
+    async fn run_with_packet_sender_emits_split_data_response() {
+        let (mut client, server) = tokio::io::duplex(1024);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let request =
+            serialize_read_packet(8, &Bytes::from_static(b"handle"), 0, 7).expect("read packet");
+
+        run_with_packet_sender(
+            server,
+            move |packet| {
+                let tx = tx.clone();
+                async move { tx.send(packet).await }
+            },
+            ReadHandler {
+                data: Bytes::from_static(b"payload"),
+            },
+        )
+        .await;
+
+        client.write_all(&request).await.unwrap();
+        let packet = rx.recv().await.expect("response packet");
+        drop(client);
+
+        match packet {
+            SerializedPacket::Split { header, data } => {
+                assert_eq!(header.len(), 13);
+                assert_eq!(data, Bytes::from_static(b"payload"));
+
+                let mut combined = BytesMut::with_capacity(header.len() + data.len());
+                combined.extend_from_slice(&header);
+                combined.extend_from_slice(&data);
+                combined.advance(4);
+
+                assert!(matches!(
+                    Packet::try_from(&mut combined),
+                    Ok(Packet::Data(Data { id: 8, .. }))
+                ));
+            }
+            SerializedPacket::Contiguous(_) => panic!("expected split packet"),
+        }
     }
 }
