@@ -21,7 +21,7 @@ use crate::{
         self, FsyncExtension, HardlinkExtension, LimitsExtension, Statvfs, StatvfsExtension,
     },
     protocol::{
-        serialize_read_packet, Attrs, Close, Data, Extended, ExtendedReply, FSetStat,
+        serialize_read_packet, serialize_write_packet, Attrs, Close, Data, Extended, ExtendedReply, FSetStat,
         FileAttributes, Fstat, Handle, Init, Lstat, MkDir, Name, Open, OpenDir, OpenFlags, Packet,
         ReadDir, ReadLink, RealPath, Remove, Rename, RmDir, SetStat, Stat, Status, StatusCode,
         Symlink, Version, Write,
@@ -368,18 +368,8 @@ impl RawSftpSession {
         }
 
         let id = self.use_next_id();
-        let result = self
-            .send(
-                Some(id),
-                Write {
-                    id,
-                    handle,
-                    offset,
-                    data,
-                }
-                .into(),
-            )
-            .await?;
+        let bytes = serialize_write_packet(id, &handle, offset, &data)?;
+        let result = self.send_bytes(Some(id), bytes).await?;
 
         into_status!(result)
     }
