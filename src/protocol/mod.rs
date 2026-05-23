@@ -454,7 +454,9 @@ pub(crate) fn serialize_packet_split(
         });
     }
 
-    Ok(SerializedPacket::Contiguous(serialize_packet_into(packet, buf)?))
+    Ok(SerializedPacket::Contiguous(serialize_packet_into(
+        packet, buf,
+    )?))
 }
 
 pub(crate) fn serialize_packet_into_buf(packet: Packet, buf: &mut BytesMut) -> Result<(), Error> {
