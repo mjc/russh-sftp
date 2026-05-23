@@ -75,26 +75,12 @@ pub struct Status {
 }
 
 impl Status {
-    fn decode_common_string<B: Buf + TryBuf>(input: &mut B) -> Result<Cow<'static, str>, ProtocolError> {
-        let bytes = input.try_get_bytes()?;
-
-        if bytes.as_ref() == b"Ok" {
-            return Ok(Cow::Borrowed("Ok"));
-        }
-
-        if bytes.as_ref() == b"en-US" {
-            return Ok(Cow::Borrowed("en-US"));
-        }
-
-        Ok(Cow::Owned(String::from_utf8_lossy(&bytes).into_owned()))
-    }
-
     pub fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, ProtocolError> {
         Ok(Self {
             id: input.try_get_u32()?,
             status_code: StatusCode::try_from(input.try_get_u32()?)?,
-            error_message: Self::decode_common_string(input)?,
-            language_tag: Self::decode_common_string(input)?,
+            error_message: Cow::Owned(input.try_get_string()?),
+            language_tag: Cow::Owned(input.try_get_string()?),
         })
     }
 
@@ -140,22 +126,5 @@ mod tests {
         status.serialize_into(&mut actual).expect("serialize manually");
 
         assert_eq!(actual.freeze(), expected);
-    }
-
-    #[test]
-    fn from_bytes_borrows_common_ok_strings() {
-        let mut buf = bytes::BytesMut::new();
-        buf.put_u32(7);
-        buf.put_u32(StatusCode::Ok as u32);
-        buf.put_u32(2);
-        buf.extend_from_slice(b"Ok");
-        buf.put_u32(5);
-        buf.extend_from_slice(b"en-US");
-
-        let mut bytes = buf.freeze();
-        let status = Status::from_bytes(&mut bytes).expect("parse status");
-
-        assert!(matches!(status.error_message, Cow::Borrowed("Ok")));
-        assert!(matches!(status.language_tag, Cow::Borrowed("en-US")));
     }
 }
