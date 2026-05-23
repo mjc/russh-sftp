@@ -24,7 +24,7 @@ use crate::{
         serialize_read_packet, serialize_write_packet, Attrs, Close, Data, Extended, ExtendedReply, FSetStat,
         FileAttributes, Fstat, Handle, Init, Lstat, MkDir, Name, Open, OpenDir, OpenFlags, Packet,
         ReadDir, ReadLink, RealPath, Remove, Rename, RmDir, SetStat, Stat, Status, StatusCode,
-        Symlink, Version, Write,
+        Symlink, Version,
     },
 };
 
