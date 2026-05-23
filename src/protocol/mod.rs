@@ -450,6 +450,10 @@ pub(crate) fn serialize_packet_into_buf(packet: Packet, buf: &mut BytesMut) -> R
                 buf.put_u8(SSH_FXP_DATA);
                 data.serialize_into(buf)?;
             }
+            Packet::Status(status) => {
+                buf.put_u8(SSH_FXP_STATUS);
+                status.serialize_into(buf)?;
+            }
             other => {
                 let serializer = serialize_packet!(
                     Init => SSH_FXP_INIT,
@@ -472,7 +476,6 @@ pub(crate) fn serialize_packet_into_buf(packet: Packet, buf: &mut BytesMut) -> R
                     Rename => SSH_FXP_RENAME,
                     ReadLink => SSH_FXP_READLINK,
                     Symlink => SSH_FXP_SYMLINK,
-                    Status => SSH_FXP_STATUS,
                     Handle => SSH_FXP_HANDLE,
                     Name => SSH_FXP_NAME,
                     Attrs => SSH_FXP_ATTRS,
