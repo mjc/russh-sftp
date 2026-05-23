@@ -10,7 +10,7 @@ pub use self::handler::Handler;
 
 use crate::{
     error::Error,
-    protocol::{serialize_packet_into_buf, Packet, StatusCode},
+    protocol::{serialize_packet_into_buf, serialize_packet_split, Packet, StatusCode},
     utils::read_packet_into_buf,
 };
 
@@ -82,11 +82,18 @@ where
         Err(_) => Packet::error(0, StatusCode::BadMessage),
     };
 
-    if let Err(err) = serialize_packet_into_buf(response, write_buf) {
+    let packet = match serialize_packet_split(response, write_buf) {
+        Ok(packet) => packet,
+        Err(err) => {
+            reset_write_buf_if_oversized(write_buf);
+            return Err(err);
+        }
+    };
+
+    if let Err(err) = packet.write_to(stream).await {
         reset_write_buf_if_oversized(write_buf);
-        return Err(err);
+        return Err(err.into());
     }
-    stream.write_all(write_buf).await?;
     stream.flush().await?;
     reset_write_buf_if_oversized(write_buf);
 

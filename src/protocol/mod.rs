@@ -29,6 +29,7 @@ mod write;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::borrow::Cow;
+use std::io::IoSlice;
 
 use crate::{buf::TryBuf, error::Error, ser, utils::MAX_PACKET_SIZE};
 
@@ -277,6 +278,57 @@ macro_rules! serialize_packet {
     };
 }
 
+pub enum SerializedPacket {
+    Contiguous(Bytes),
+    Split { header: Bytes, data: Bytes },
+}
+
+impl SerializedPacket {
+    pub async fn write_to<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        stream: &mut W,
+    ) -> Result<(), std::io::Error> {
+        use tokio::io::AsyncWriteExt;
+
+        match self {
+            Self::Contiguous(bytes) => {
+                stream.write_all(bytes).await?;
+            }
+            Self::Split { header, data } => {
+                let mut header_offset = 0;
+                let mut data_offset = 0;
+
+                while header_offset < header.len() || data_offset < data.len() {
+                    let buffers = [
+                        IoSlice::new(&header[header_offset..]),
+                        IoSlice::new(&data[data_offset..]),
+                    ];
+
+                    let written = stream.write_vectored(&buffers).await?;
+                    if written == 0 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "failed to write entire buffer",
+                        ));
+                    }
+
+                    let mut remaining = written;
+                    if header_offset < header.len() {
+                        let header_written = remaining.min(header.len() - header_offset);
+                        header_offset += header_written;
+                        remaining -= header_written;
+                    }
+                    if remaining > 0 {
+                        data_offset += remaining;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Serialize a packet into an existing buffer, returning owned `Bytes`.
 /// The buffer is cleared and reused while serializing, then cloned into the
 /// returned `Bytes`.
@@ -344,6 +396,32 @@ pub(crate) fn serialize_read_packet(
     buf.put_u64(offset);
     buf.put_u32(len);
     Ok(buf.freeze())
+}
+
+pub(crate) fn serialize_packet_split(
+    packet: Packet,
+    buf: &mut BytesMut,
+) -> Result<SerializedPacket, Error> {
+    if let Packet::Data(data) = packet {
+        let payload_len = checked_data_packet_payload_len(&data)?;
+        let packet_len = checked_packet_length(payload_len)?;
+        let data_len = u32::try_from(data.data.len())
+            .map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))?;
+
+        buf.clear();
+        buf.reserve(13);
+        buf.put_u32(packet_len);
+        buf.put_u8(SSH_FXP_DATA);
+        buf.put_u32(data.id);
+        buf.put_u32(data_len);
+
+        return Ok(SerializedPacket::Split {
+            header: buf.split().freeze(),
+            data: data.data,
+        });
+    }
+
+    Ok(SerializedPacket::Contiguous(serialize_packet_into(packet, buf)?))
 }
 
 pub(crate) fn serialize_packet_into_buf(packet: Packet, buf: &mut BytesMut) -> Result<(), Error> {
@@ -475,6 +553,39 @@ mod tests {
                 panic!("Expected Data packet");
             }
         });
+    }
+
+    #[test]
+    fn split_data_serialization_matches_contiguous() {
+        let payload = vec![0xCAu8; 32 * 1024];
+
+        let contiguous = Bytes::try_from(Packet::Data(Data {
+            id: 42,
+            data: Bytes::from(payload.clone()),
+        }))
+        .expect("contiguous serialize failed");
+
+        let mut buf = BytesMut::new();
+        let split = serialize_packet_split(
+            Packet::Data(Data {
+                id: 42,
+                data: Bytes::from(payload),
+            }),
+            &mut buf,
+        )
+        .expect("split serialize failed");
+
+        let reassembled = match split {
+            SerializedPacket::Contiguous(_) => panic!("expected split packet"),
+            SerializedPacket::Split { header, data } => {
+                let mut combined = BytesMut::with_capacity(header.len() + data.len());
+                combined.extend_from_slice(&header);
+                combined.extend_from_slice(&data);
+                combined.freeze()
+            }
+        };
+
+        assert_eq!(reassembled, contiguous);
     }
 
     #[test]
