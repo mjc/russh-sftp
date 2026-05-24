@@ -19,7 +19,7 @@ use tokio::{
 
 use super::Metadata;
 use crate::{
-    client::{error::Error, request_session::RequestSession, session::Extensions, SftpResult},
+    client::{error::Error, rawsession::RawSftpSession, session::Extensions, SftpResult},
     protocol::StatusCode,
 };
 
@@ -66,7 +66,7 @@ impl FileState {
 /// Using [`SeekFrom::End`] is costly and time-consuming because we need to
 /// request the actual file size from the remote server.
 pub struct File {
-    session: Arc<RequestSession>,
+    session: Arc<RawSftpSession>,
     handle: Bytes,
     state: FileState,
     pos: u64,
@@ -76,7 +76,7 @@ pub struct File {
 
 impl File {
     pub(crate) fn new(
-        session: Arc<RequestSession>,
+        session: Arc<RawSftpSession>,
         handle: Bytes,
         extensions: Arc<Extensions>,
     ) -> Self {

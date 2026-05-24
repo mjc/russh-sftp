@@ -1,10 +1,11 @@
 pub mod error;
 pub mod fs;
 mod handler;
-mod request_session;
+pub mod rawsession;
 mod session;
 
 pub use handler::Handler;
+pub use rawsession::RawSftpSession;
 pub use session::SftpSession;
 
 pub type SftpResult<T> = Result<T, error::Error>;

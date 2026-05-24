@@ -5,6 +5,8 @@
 //!
 //! The client implementation contains:
 //!
+//! * Standard communication via [RawSftpSession](crate::client::RawSftpSession) which provides methods
+//!   for sending and receiving a packet in place.
 //! * [High level](crate::client::SftpSession) is similar to [`std::fs`] and has almost all the same
 //!   implementations. Implements Async I/O for interaction with files. The main idea is to abstract
 //!   from all the nuances and flaws of the SFTP protocol. This also takes into account the extension

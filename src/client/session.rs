@@ -4,7 +4,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use super::{
     error::Error,
     fs::{File, Metadata, ReadDir},
-    request_session::{Limits, RequestSession},
+    rawsession::{Limits, RawSftpSession},
     SftpResult,
 };
 use crate::{
@@ -23,7 +23,7 @@ pub(crate) struct Extensions {
 /// High-level SFTP implementation for easy interaction with a remote file system.
 /// Contains most methods similar to the native [filesystem](std::fs)
 pub struct SftpSession {
-    session: Arc<RequestSession>,
+    session: Arc<RawSftpSession>,
     extensions: Arc<Extensions>,
 }
 
@@ -41,7 +41,7 @@ impl SftpSession {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let mut session = RequestSession::new(stream);
+        let mut session = RawSftpSession::new(stream);
 
         // todo: for new options we need builder
         if let Some(timeout) = timeout {

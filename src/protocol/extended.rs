@@ -5,7 +5,7 @@ use crate::{buf::TryBuf, error::Error};
 use crate::{de::data_deserialize, ser::data_serialize};
 
 // TODO: Change `data` field from Vec<u8> to Bytes to avoid copies.
-// Requires updating RequestSession::extended(), Handler::extended(), and
+// Requires updating RawSftpSession::extended(), Handler::extended(), and
 // the extension structs' TryInto implementations (breaking change).
 
 fn remaining_to_vec<B: Buf>(input: &mut B) -> Vec<u8> {
