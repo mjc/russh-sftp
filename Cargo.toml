@@ -29,10 +29,10 @@ bytes = "1.10"
 dashmap = "6"
 log = "0.4"
 futures = "0.3"
+rand = "0.10.1"
 
 [dev-dependencies]
 russh = { git = "https://github.com/mjc/russh.git", branch = "main" }
-rand = "0.10.1"
 env_logger = "0.11"
 anyhow = "1.0"
 criterion = { version = "0.5", features = ["async_tokio"] }

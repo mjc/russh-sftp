@@ -1,12 +1,13 @@
 pub mod error;
 pub mod fs;
 mod handler;
-pub mod rawsession;
+mod request_session;
 mod session;
 
 pub use handler::Handler;
-pub use rawsession::RawSftpSession;
 pub use session::SftpSession;
+
+pub type SftpResult<T> = Result<T, error::Error>;
 
 use bytes::{Bytes, BytesMut};
 use tokio::{

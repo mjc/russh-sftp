@@ -19,7 +19,7 @@ use tokio::{
 
 use super::Metadata;
 use crate::{
-    client::{error::Error, rawsession::SftpResult, session::Extensions, RawSftpSession},
+    client::{error::Error, request_session::RequestSession, session::Extensions, SftpResult},
     protocol::StatusCode,
 };
 
@@ -66,7 +66,7 @@ impl FileState {
 /// Using [`SeekFrom::End`] is costly and time-consuming because we need to
 /// request the actual file size from the remote server.
 pub struct File {
-    session: Arc<RawSftpSession>,
+    session: Arc<RequestSession>,
     handle: Bytes,
     state: FileState,
     pos: u64,
@@ -76,7 +76,7 @@ pub struct File {
 
 impl File {
     pub(crate) fn new(
-        session: Arc<RawSftpSession>,
+        session: Arc<RequestSession>,
         handle: Bytes,
         extensions: Arc<Extensions>,
     ) -> Self {
@@ -124,6 +124,35 @@ impl File {
 
         self.session
             .fsync_bytes(self.handle.clone())
+            .await
+            .map(|_| ())
+    }
+
+    /// Reads bytes from a specific offset without changing the file cursor.
+    pub async fn read_at(&self, offset: u64, len: u32) -> SftpResult<Bytes> {
+        self.session
+            .read_bytes(self.handle.clone(), offset, len)
+            .await
+            .map(|data| data.data)
+    }
+
+    /// Writes bytes at a specific offset without changing the file cursor.
+    pub async fn write_at(&self, offset: u64, data: Bytes) -> SftpResult<()> {
+        self.session
+            .write_bytes(self.handle.clone(), offset, data)
+            .await
+            .map(|_| ())
+    }
+
+    /// Closes the remote file handle.
+    pub async fn close(mut self) -> SftpResult<()> {
+        if self.closed {
+            return Ok(());
+        }
+
+        self.closed = true;
+        self.session
+            .close_bytes(self.handle.clone())
             .await
             .map(|_| ())
     }

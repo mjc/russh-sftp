@@ -14,7 +14,7 @@ use tokio::{
     time,
 };
 
-use super::{error::Error, run, Handler};
+use super::{error::Error, run, Handler, SftpResult};
 use crate::{
     de,
     extensions::{
@@ -28,7 +28,6 @@ use crate::{
     },
 };
 
-pub type SftpResult<T> = Result<T, Error>;
 type SharedRequests = DashMap<Option<u32>, oneshot::Sender<SftpResult<Packet>>>;
 
 pub(crate) struct SessionInner {
@@ -142,7 +141,7 @@ pub(crate) struct Options {
 /// If the server returns a `Status` packet and it has the code Ok
 /// then the packet is returned as Ok in other error cases
 /// the packet is stored as Err.
-pub struct RawSftpSession {
+pub(crate) struct RequestSession {
     tx: mpsc::UnboundedSender<Bytes>,
     requests: Arc<SharedRequests>,
     next_req_id: AtomicU32,
@@ -170,7 +169,7 @@ macro_rules! into_status {
     };
 }
 
-impl RawSftpSession {
+impl RequestSession {
     pub fn new<S>(stream: S) -> Self
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -297,10 +296,6 @@ impl RawSftpSession {
         into_with_status!(result, Handle)
     }
 
-    pub async fn close<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
-        self.close_bytes(Bytes::from(handle.into())).await
-    }
-
     pub async fn close_bytes(&self, handle: Bytes) -> SftpResult<Status> {
         let id = self.use_next_id();
         let result = self.send(Some(id), Close { id, handle }.into()).await?;
@@ -325,16 +320,6 @@ impl RawSftpSession {
         into_status!(result)
     }
 
-    pub async fn read<H: Into<String>>(
-        &self,
-        handle: H,
-        offset: u64,
-        len: u32,
-    ) -> SftpResult<Data> {
-        self.read_bytes(Bytes::from(handle.into()), offset, len)
-            .await
-    }
-
     pub async fn read_bytes(&self, handle: Bytes, offset: u64, len: u32) -> SftpResult<Data> {
         if self.options.limits.read_len.is_some_and(|r| len as u64 > r) {
             return Err(Error::Limited("read limit reached".to_owned()));
@@ -345,16 +330,6 @@ impl RawSftpSession {
         let result = self.send_bytes(Some(id), bytes).await?;
 
         into_with_status!(result, Data)
-    }
-
-    pub async fn write<H: Into<String>>(
-        &self,
-        handle: H,
-        offset: u64,
-        data: Vec<u8>,
-    ) -> SftpResult<Status> {
-        self.write_bytes(Bytes::from(handle.into()), offset, data.into())
-            .await
     }
 
     pub async fn write_bytes(&self, handle: Bytes, offset: u64, data: Bytes) -> SftpResult<Status> {
@@ -390,10 +365,6 @@ impl RawSftpSession {
         into_with_status!(result, Attrs)
     }
 
-    pub async fn fstat<H: Into<String>>(&self, handle: H) -> SftpResult<Attrs> {
-        self.fstat_bytes(Bytes::from(handle.into())).await
-    }
-
     pub async fn fstat_bytes(&self, handle: Bytes) -> SftpResult<Attrs> {
         let id = self.use_next_id();
         let result = self.send(Some(id), Fstat { id, handle }.into()).await?;
@@ -420,14 +391,6 @@ impl RawSftpSession {
             .await?;
 
         into_status!(result)
-    }
-
-    pub async fn fsetstat<H: Into<String>>(
-        &self,
-        handle: H,
-        attrs: FileAttributes,
-    ) -> SftpResult<Status> {
-        self.fsetstat_bytes(Bytes::from(handle.into()), attrs).await
     }
 
     pub async fn fsetstat_bytes(&self, handle: Bytes, attrs: FileAttributes) -> SftpResult<Status> {
@@ -466,10 +429,6 @@ impl RawSftpSession {
         }
 
         into_with_status!(result, Handle)
-    }
-
-    pub async fn readdir<H: Into<String>>(&self, handle: H) -> SftpResult<Name> {
-        self.readdir_bytes(Bytes::from(handle.into())).await
     }
 
     pub async fn readdir_bytes(&self, handle: Bytes) -> SftpResult<Name> {
@@ -669,10 +628,6 @@ impl RawSftpSession {
         into_status!(result)
     }
 
-    pub async fn fsync<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
-        self.fsync_bytes(Bytes::from(handle.into())).await
-    }
-
     pub async fn fsync_bytes(&self, handle: Bytes) -> SftpResult<Status> {
         let result = self
             .extended(extensions::FSYNC, FsyncExtension { handle }.try_into()?)
@@ -702,7 +657,7 @@ impl RawSftpSession {
     }
 }
 
-impl Drop for RawSftpSession {
+impl Drop for RequestSession {
     fn drop(&mut self) {
         let _ = self.close_session();
     }

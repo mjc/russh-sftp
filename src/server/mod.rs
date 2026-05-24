@@ -1,4 +1,6 @@
 mod handler;
+mod handles;
+mod session;
 
 use bytes::Bytes;
 use bytes::BytesMut;
@@ -7,6 +9,8 @@ use std::future::Future;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 pub use self::handler::Handler;
+pub use self::handles::{DirHandle, FileHandle, SessionHandle, SessionHandles};
+pub use self::session::{ManagedSession, SessionHandler};
 
 use crate::{
     error::Error,
