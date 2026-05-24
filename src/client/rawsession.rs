@@ -28,8 +28,9 @@ use crate::{
     },
 };
 
-pub type SftpResult<T> = Result<T, Error>;
 type SharedRequests = DashMap<Option<u32>, oneshot::Sender<SftpResult<Packet>>>;
+
+pub type SftpResult<T> = Result<T, Error>;
 
 pub(crate) struct SessionInner {
     version: Option<u32>,
@@ -297,10 +298,6 @@ impl RawSftpSession {
         into_with_status!(result, Handle)
     }
 
-    pub async fn close<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
-        self.close_bytes(Bytes::from(handle.into())).await
-    }
-
     pub async fn close_bytes(&self, handle: Bytes) -> SftpResult<Status> {
         let id = self.use_next_id();
         let result = self.send(Some(id), Close { id, handle }.into()).await?;
@@ -325,14 +322,8 @@ impl RawSftpSession {
         into_status!(result)
     }
 
-    pub async fn read<H: Into<String>>(
-        &self,
-        handle: H,
-        offset: u64,
-        len: u32,
-    ) -> SftpResult<Data> {
-        self.read_bytes(Bytes::from(handle.into()), offset, len)
-            .await
+    pub async fn close<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
+        self.close_bytes(Bytes::from(handle.into())).await
     }
 
     pub async fn read_bytes(&self, handle: Bytes, offset: u64, len: u32) -> SftpResult<Data> {
@@ -347,13 +338,13 @@ impl RawSftpSession {
         into_with_status!(result, Data)
     }
 
-    pub async fn write<H: Into<String>>(
+    pub async fn read<H: Into<String>>(
         &self,
         handle: H,
         offset: u64,
-        data: Vec<u8>,
-    ) -> SftpResult<Status> {
-        self.write_bytes(Bytes::from(handle.into()), offset, data.into())
+        len: u32,
+    ) -> SftpResult<Data> {
+        self.read_bytes(Bytes::from(handle.into()), offset, len)
             .await
     }
 
@@ -374,6 +365,16 @@ impl RawSftpSession {
         into_status!(result)
     }
 
+    pub async fn write<H: Into<String>>(
+        &self,
+        handle: H,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> SftpResult<Status> {
+        self.write_bytes(Bytes::from(handle.into()), offset, data.into())
+            .await
+    }
+
     pub async fn lstat<P: Into<String>>(&self, path: P) -> SftpResult<Attrs> {
         let id = self.use_next_id();
         let result = self
@@ -390,15 +391,15 @@ impl RawSftpSession {
         into_with_status!(result, Attrs)
     }
 
-    pub async fn fstat<H: Into<String>>(&self, handle: H) -> SftpResult<Attrs> {
-        self.fstat_bytes(Bytes::from(handle.into())).await
-    }
-
     pub async fn fstat_bytes(&self, handle: Bytes) -> SftpResult<Attrs> {
         let id = self.use_next_id();
         let result = self.send(Some(id), Fstat { id, handle }.into()).await?;
 
         into_with_status!(result, Attrs)
+    }
+
+    pub async fn fstat<H: Into<String>>(&self, handle: H) -> SftpResult<Attrs> {
+        self.fstat_bytes(Bytes::from(handle.into())).await
     }
 
     pub async fn setstat<P: Into<String>>(
@@ -422,14 +423,6 @@ impl RawSftpSession {
         into_status!(result)
     }
 
-    pub async fn fsetstat<H: Into<String>>(
-        &self,
-        handle: H,
-        attrs: FileAttributes,
-    ) -> SftpResult<Status> {
-        self.fsetstat_bytes(Bytes::from(handle.into()), attrs).await
-    }
-
     pub async fn fsetstat_bytes(&self, handle: Bytes, attrs: FileAttributes) -> SftpResult<Status> {
         let id = self.use_next_id();
         let result = self
@@ -437,6 +430,14 @@ impl RawSftpSession {
             .await?;
 
         into_status!(result)
+    }
+
+    pub async fn fsetstat<H: Into<String>>(
+        &self,
+        handle: H,
+        attrs: FileAttributes,
+    ) -> SftpResult<Status> {
+        self.fsetstat_bytes(Bytes::from(handle.into()), attrs).await
     }
 
     pub async fn opendir<P: Into<String>>(&self, path: P) -> SftpResult<Handle> {
@@ -468,15 +469,15 @@ impl RawSftpSession {
         into_with_status!(result, Handle)
     }
 
-    pub async fn readdir<H: Into<String>>(&self, handle: H) -> SftpResult<Name> {
-        self.readdir_bytes(Bytes::from(handle.into())).await
-    }
-
     pub async fn readdir_bytes(&self, handle: Bytes) -> SftpResult<Name> {
         let id = self.use_next_id();
         let result = self.send(Some(id), ReadDir { id, handle }.into()).await?;
 
         into_with_status!(result, Name)
+    }
+
+    pub async fn readdir<H: Into<String>>(&self, handle: H) -> SftpResult<Name> {
+        self.readdir_bytes(Bytes::from(handle.into())).await
     }
 
     pub async fn remove<T: Into<String>>(&self, filename: T) -> SftpResult<Status> {
@@ -669,16 +670,16 @@ impl RawSftpSession {
         into_status!(result)
     }
 
-    pub async fn fsync<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
-        self.fsync_bytes(Bytes::from(handle.into())).await
-    }
-
     pub async fn fsync_bytes(&self, handle: Bytes) -> SftpResult<Status> {
         let result = self
             .extended(extensions::FSYNC, FsyncExtension { handle }.try_into()?)
             .await?;
 
         into_status!(result)
+    }
+
+    pub async fn fsync<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
+        self.fsync_bytes(Bytes::from(handle.into())).await
     }
 
     pub async fn statvfs<P>(&self, path: P) -> SftpResult<Statvfs>
