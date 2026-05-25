@@ -586,7 +586,7 @@ mod tests {
             async move {
                 Ok(Data {
                     id,
-                    data: Bytes::from(format!("{file}:{offset}:{len}")),
+                    data: Bytes::from(format!("{file}:{offset}:{len}")).into(),
                 })
             }
         }

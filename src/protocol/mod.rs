@@ -36,7 +36,7 @@ use crate::{buf::TryBuf, error::Error, ser, utils::MAX_PACKET_SIZE};
 pub use self::{
     attrs::Attrs,
     close::Close,
-    data::Data,
+    data::{Data, DataPayload},
     extended::{Extended, ExtendedReply},
     file::File,
     file_attrs::{
@@ -280,7 +280,7 @@ macro_rules! serialize_packet {
 
 pub enum SerializedPacket {
     Contiguous(Bytes),
-    Split { header: Bytes, data: Bytes },
+    Split { header: Bytes, data: DataPayload },
 }
 
 impl SerializedPacket {
@@ -301,7 +301,7 @@ impl SerializedPacket {
                 while header_offset < header.len() || data_offset < data.len() {
                     let buffers = [
                         IoSlice::new(&header[header_offset..]),
-                        IoSlice::new(&data[data_offset..]),
+                        IoSlice::new(&data.as_ref()[data_offset..]),
                     ];
 
                     let written = stream.write_vectored(&buffers).await?;
@@ -581,7 +581,7 @@ mod tests {
     fn packet_data_roundtrip() {
         let original = Data {
             id: 99,
-            data: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+            data: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]).into(),
         };
         assert_packet_roundtrip(Packet::Data(original), |packet| {
             if let Packet::Data(data) = packet {
@@ -599,7 +599,7 @@ mod tests {
 
         let contiguous = Bytes::try_from(Packet::Data(Data {
             id: 42,
-            data: Bytes::from(payload.clone()),
+            data: Bytes::from(payload.clone()).into(),
         }))
         .expect("contiguous serialize failed");
 
@@ -607,7 +607,7 @@ mod tests {
         let split = serialize_packet_split(
             Packet::Data(Data {
                 id: 42,
-                data: Bytes::from(payload),
+                data: Bytes::from(payload).into(),
             }),
             &mut buf,
         )
@@ -618,7 +618,7 @@ mod tests {
             SerializedPacket::Split { header, data } => {
                 let mut combined = BytesMut::with_capacity(header.len() + data.len());
                 combined.extend_from_slice(&header);
-                combined.extend_from_slice(&data);
+                combined.extend_from_slice(data.as_ref());
                 combined.freeze()
             }
         };
@@ -937,7 +937,7 @@ mod tests {
     fn serialize_packet_into_buf_reuses_existing_allocation() {
         let packet = Packet::Data(Data {
             id: 1,
-            data: Bytes::from_static(b"payload"),
+            data: Bytes::from_static(b"payload").into(),
         });
         let mut buf = BytesMut::with_capacity(64 * 1024);
         let ptr = buf.as_ptr();
@@ -960,11 +960,11 @@ mod tests {
     fn serialize_packet_into_data_matches_existing_wire_shape() {
         let packet = Packet::Data(Data {
             id: 7,
-            data: Bytes::from_static(b"payload"),
+            data: Bytes::from_static(b"payload").into(),
         });
         let data = Data {
             id: 7,
-            data: Bytes::from_static(b"payload"),
+            data: Bytes::from_static(b"payload").into(),
         };
         let mut packet_buf = BytesMut::new();
 
@@ -1002,7 +1002,7 @@ mod tests {
     fn serialize_packet_into_data_handles_empty_payloads() {
         let packet = Packet::Data(Data {
             id: 9,
-            data: Bytes::new(),
+            data: Bytes::new().into(),
         });
         let mut buf = BytesMut::new();
 

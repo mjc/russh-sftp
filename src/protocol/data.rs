@@ -1,4 +1,5 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use serde::{Deserialize, Deserializer, Serializer};
 
 use super::{impl_packet_for, impl_request_id, Packet, RequestId};
 use crate::buf::TryBuf;
@@ -8,14 +9,17 @@ use crate::error::Error;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Data {
     pub id: u32,
-    #[serde(deserialize_with = "crate::de::bytes_deserialize")]
-    #[serde(serialize_with = "crate::ser::bytes_serialize")]
-    pub data: Bytes,
+    #[serde(deserialize_with = "data_payload_deserialize")]
+    #[serde(serialize_with = "data_payload_serialize")]
+    pub data: DataPayload,
 }
 
 impl Data {
     pub fn new(id: u32, data: Bytes) -> Self {
-        Self { id, data }
+        Self {
+            id,
+            data: data.into(),
+        }
     }
 
     /// Zero-copy deserialization from Bytes.
@@ -23,7 +27,10 @@ impl Data {
     pub fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, Error> {
         let id = input.try_get_u32()?;
         let data = input.try_get_bytes()?;
-        Ok(Data { id, data })
+        Ok(Data {
+            id,
+            data: data.into(),
+        })
     }
 
     pub(crate) fn serialize_into(&self, output: &mut BytesMut) -> Result<(), Error> {
@@ -32,9 +39,97 @@ impl Data {
             u32::try_from(self.data.len())
                 .map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))?,
         );
-        output.put_slice(&self.data);
+        output.put_slice(self.data.as_ref());
         Ok(())
     }
+}
+
+#[derive(Debug)]
+pub enum DataPayload {
+    Bytes(Bytes),
+    #[cfg(feature = "russh-channel-data")]
+    Channel(russh::ChannelData),
+}
+
+impl DataPayload {
+    pub fn len(&self) -> usize {
+        self.as_ref().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.as_ref().is_empty()
+    }
+
+    pub fn into_bytes(self) -> Bytes {
+        match self {
+            Self::Bytes(data) => data,
+            #[cfg(feature = "russh-channel-data")]
+            Self::Channel(data) => Bytes::copy_from_slice(data.as_ref()),
+        }
+    }
+
+    #[cfg(feature = "russh-channel-data")]
+    pub fn into_channel_data(self) -> russh::ChannelData {
+        match self {
+            Self::Bytes(data) => data.into(),
+            Self::Channel(data) => data,
+        }
+    }
+}
+
+impl AsRef<[u8]> for DataPayload {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Bytes(data) => data.as_ref(),
+            #[cfg(feature = "russh-channel-data")]
+            Self::Channel(data) => data.as_ref(),
+        }
+    }
+}
+
+impl From<Bytes> for DataPayload {
+    fn from(data: Bytes) -> Self {
+        Self::Bytes(data)
+    }
+}
+
+impl From<Vec<u8>> for DataPayload {
+    fn from(data: Vec<u8>) -> Self {
+        Self::Bytes(data.into())
+    }
+}
+
+#[cfg(feature = "russh-channel-data")]
+impl From<russh::ChannelData> for DataPayload {
+    fn from(data: russh::ChannelData) -> Self {
+        Self::Channel(data)
+    }
+}
+
+impl PartialEq<Bytes> for DataPayload {
+    fn eq(&self, other: &Bytes) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl PartialEq for DataPayload {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+fn data_payload_serialize<S>(data: &DataPayload, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_bytes(data.as_ref())
+}
+
+fn data_payload_deserialize<'de, D>(deserializer: D) -> Result<DataPayload, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    crate::de::bytes_deserialize(deserializer).map(DataPayload::from)
 }
 
 impl_request_id!(Data);
@@ -49,7 +144,7 @@ mod tests {
     fn data_roundtrip() {
         let original = Data {
             id: 42,
-            data: Bytes::from_static(b"file contents here"),
+            data: Bytes::from_static(b"file contents here").into(),
         };
 
         let serialized = ser::to_bytes(&original).expect("serialize failed");
@@ -64,7 +159,7 @@ mod tests {
     fn data_empty() {
         let original = Data {
             id: 1,
-            data: Bytes::new(),
+            data: Bytes::new().into(),
         };
 
         let serialized = ser::to_bytes(&original).expect("serialize failed");
@@ -79,7 +174,7 @@ mod tests {
         let large_data = vec![0xCDu8; 32 * 1024]; // 32KB
         let original = Data {
             id: 999,
-            data: Bytes::from(large_data.clone()),
+            data: Bytes::from(large_data.clone()).into(),
         };
 
         let serialized = ser::to_bytes(&original).expect("serialize failed");

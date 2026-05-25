@@ -21,7 +21,7 @@ fn write_fixture(size: usize) -> Write {
 fn data_fixture(size: usize) -> Data {
     Data {
         id: 43,
-        data: Bytes::from(vec![0xCD; size]),
+        data: Bytes::from(vec![0xCD; size]).into(),
     }
 }
 

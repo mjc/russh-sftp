@@ -22,6 +22,7 @@ tokio-util = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 bitflags = { version = "2.9", features = ["serde"] }
 async-trait = { version = "0.1", optional = true }
+russh = { git = "https://github.com/mjc/russh.git", branch = "mjc/own-inbound-channel-payloads", optional = true, default-features = false, features = ["aws-lc-rs", "flate2"] }
 
 thiserror = "2.0"
 chrono = "0.4"
@@ -32,7 +33,6 @@ futures = "0.3"
 rand = "0.10.1"
 
 [dev-dependencies]
-russh = { git = "https://github.com/mjc/russh.git", branch = "main" }
 env_logger = "0.11"
 anyhow = "1.0"
 criterion = { version = "0.5", features = ["async_tokio"] }
@@ -40,6 +40,7 @@ iai-callgrind = "0.16.1"
 
 [features]
 async-trait = ["dep:async-trait"]
+russh-channel-data = ["dep:russh"]
 
 [[bench]]
 name = "upload_benchmark"
