@@ -280,18 +280,10 @@ where
     }
 
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
-        if let Some(handle) = self.handles.decode_file(&handle) {
-            let file = self
-                .handles
-                .remove_file(&handle)
-                .ok_or(StatusCode::Failure)?;
+        if let Some(file) = self.handles.remove_file_raw(&handle) {
             return self.handler.close_file(id, file).await.map_err(Into::into);
         }
-        if let Some(handle) = self.handles.decode_dir(&handle) {
-            let dir = self
-                .handles
-                .remove_dir(&handle)
-                .ok_or(StatusCode::Failure)?;
+        if let Some(dir) = self.handles.remove_dir_raw(&handle) {
             return self.handler.close_dir(id, dir).await.map_err(Into::into);
         }
         Err(StatusCode::Failure)
@@ -304,13 +296,9 @@ where
         offset: u64,
         len: u32,
     ) -> Result<Data, Self::Error> {
-        let handle = self
-            .handles
-            .decode_file(&handle)
-            .ok_or(StatusCode::Failure)?;
         let file = self
             .handles
-            .get_file_mut(&handle)
+            .get_file_mut_raw(&handle)
             .ok_or(StatusCode::Failure)?;
         self.handler
             .read(id, file, offset, len)
@@ -325,13 +313,9 @@ where
         offset: u64,
         data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
-        let handle = self
-            .handles
-            .decode_file(&handle)
-            .ok_or(StatusCode::Failure)?;
         let file = self
             .handles
-            .get_file_mut(&handle)
+            .get_file_mut_raw(&handle)
             .ok_or(StatusCode::Failure)?;
         self.handler
             .write(id, file, offset, data)
@@ -340,30 +324,18 @@ where
     }
 
     async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
-        let handle = self
-            .handles
-            .decode_dir(&handle)
-            .ok_or(StatusCode::Failure)?;
         let dir = self
             .handles
-            .get_dir_mut(&handle)
+            .get_dir_mut_raw(&handle)
             .ok_or(StatusCode::Failure)?;
         self.handler.readdir(id, dir).await.map_err(Into::into)
     }
 
     async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
-        if let Some(handle) = self.handles.decode_file(&handle) {
-            let file = self
-                .handles
-                .get_file_mut(&handle)
-                .ok_or(StatusCode::Failure)?;
+        if let Some(file) = self.handles.get_file_mut_raw(&handle) {
             return self.handler.fstat_file(id, file).await.map_err(Into::into);
         }
-        if let Some(handle) = self.handles.decode_dir(&handle) {
-            let dir = self
-                .handles
-                .get_dir_mut(&handle)
-                .ok_or(StatusCode::Failure)?;
+        if let Some(dir) = self.handles.get_dir_mut_raw(&handle) {
             return self.handler.fstat_dir(id, dir).await.map_err(Into::into);
         }
         Err(StatusCode::Failure)
@@ -375,22 +347,14 @@ where
         handle: String,
         attrs: FileAttributes,
     ) -> Result<Status, Self::Error> {
-        if let Some(handle) = self.handles.decode_file(&handle) {
-            let file = self
-                .handles
-                .get_file_mut(&handle)
-                .ok_or(StatusCode::Failure)?;
+        if let Some(file) = self.handles.get_file_mut_raw(&handle) {
             return self
                 .handler
                 .fsetstat_file(id, file, attrs)
                 .await
                 .map_err(Into::into);
         }
-        if let Some(handle) = self.handles.decode_dir(&handle) {
-            let dir = self
-                .handles
-                .get_dir_mut(&handle)
-                .ok_or(StatusCode::Failure)?;
+        if let Some(dir) = self.handles.get_dir_mut_raw(&handle) {
             return self
                 .handler
                 .fsetstat_dir(id, dir, attrs)

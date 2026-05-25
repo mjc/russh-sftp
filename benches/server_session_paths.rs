@@ -1,9 +1,9 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, Criterion};
 use russh_sftp::{
     protocol::{Data, FileAttributes, Handle, Open, OpenFlags, Packet, Read, Status, StatusCode},
     server::{self, Handler, ManagedSession, SessionHandler},
 };
-use std::{future::Future, hint::black_box};
+use std::{env, future::Future, hint::black_box};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const OPEN_ID: u32 = 1;
@@ -180,4 +180,32 @@ fn bench_server_paths(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_server_paths);
-criterion_main!(benches);
+
+fn main() {
+    if let Ok(mode) = env::var("SFTP_PROFILE_SERVER_PATH") {
+        let iterations = env::var("SFTP_PROFILE_ITERS")
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(100_000);
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+        runtime.block_on(async {
+            match mode.as_str() {
+                "raw" => {
+                    for _ in 0..iterations {
+                        run_open_read_close(RawHandler).await;
+                    }
+                }
+                "managed" => {
+                    for _ in 0..iterations {
+                        run_open_read_close(ManagedSession::new(TypedHandler)).await;
+                    }
+                }
+                _ => panic!("SFTP_PROFILE_SERVER_PATH must be raw or managed"),
+            }
+        });
+        return;
+    }
+
+    benches();
+}
