@@ -48,3 +48,7 @@ async-trait = ["dep:async-trait"]
 [[bench]]
 name = "upload_benchmark"
 harness = false
+
+[[bench]]
+name = "server_session_paths"
+harness = false
