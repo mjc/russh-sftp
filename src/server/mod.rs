@@ -364,7 +364,12 @@ mod tests {
             _len: u32,
         ) -> impl Future<Output = Result<Data, Self::Error>> + Send {
             let data = self.data.clone();
-            async move { Ok(Data { id, data }) }
+            async move {
+                Ok(Data {
+                    id,
+                    data: data.into(),
+                })
+            }
         }
     }
 
@@ -458,7 +463,7 @@ mod tests {
 
                 let mut combined = BytesMut::with_capacity(header.len() + data.len());
                 combined.extend_from_slice(&header);
-                combined.extend_from_slice(&data);
+                combined.extend_from_slice(data.as_ref());
                 combined.advance(4);
 
                 assert!(matches!(

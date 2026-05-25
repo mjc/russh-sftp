@@ -1,5 +1,7 @@
 use std::{collections::HashMap, future::Future};
 
+use bytes::Bytes;
+
 use super::{Handler, SessionHandles};
 use crate::protocol::{
     Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusCode, Version,
@@ -232,7 +234,7 @@ impl<H: SessionHandler> ManagedSession<H> {
     }
 }
 
-impl<H> Handler for ManagedSession<H>
+impl<H> Handler<String, Vec<u8>> for ManagedSession<H>
 where
     H: SessionHandler + Send,
 {
@@ -516,7 +518,7 @@ mod tests {
             async move {
                 Ok(Data {
                     id,
-                    data: format!("{file}:{offset}:{len}").into_bytes(),
+                    data: Bytes::from(format!("{file}:{offset}:{len}")).into(),
                 })
             }
         }

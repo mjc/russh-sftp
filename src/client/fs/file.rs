@@ -133,7 +133,7 @@ impl File {
         self.session
             .read_bytes(self.handle.clone(), offset, len)
             .await
-            .map(|data| data.data)
+            .map(|data| data.data.into_bytes())
     }
 
     /// Writes bytes at a specific offset without changing the file cursor.
@@ -231,7 +231,7 @@ impl AsyncRead for File {
                         Ok(data) => Ok(ReadResult {
                             offset,
                             len,
-                            data: Some(data.data),
+                            data: Some(data.data.into_bytes()),
                         }),
                         Err(Error::Status(status)) if status.status_code == StatusCode::Eof => {
                             Ok(ReadResult {
