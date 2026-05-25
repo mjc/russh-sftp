@@ -122,3 +122,96 @@ where
         debug!("sftp stream ended");
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashMap,
+        future::Future,
+        sync::{Arc, Mutex},
+    };
+
+    use super::Handler;
+    use crate::protocol::{Data, FileAttributes, Handle, OpenFlags, StatusCode};
+
+    #[derive(Clone, Default)]
+    struct SharedRawHandler {
+        user: &'static str,
+        handles: Arc<Mutex<HashMap<String, String>>>,
+    }
+
+    impl Handler for SharedRawHandler {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> Self::Error {
+            StatusCode::OpUnsupported
+        }
+
+        fn open(
+            &mut self,
+            id: u32,
+            filename: String,
+            _pflags: OpenFlags,
+            _attrs: FileAttributes,
+        ) -> impl Future<Output = Result<Handle, Self::Error>> + Send {
+            let mut handles = self.handles.lock().expect("handles");
+            let handle = format!("h{}", handles.len());
+            handles.insert(handle.clone(), format!("{}:{filename}", self.user));
+
+            async move { Ok(Handle { id, handle }) }
+        }
+
+        fn read(
+            &mut self,
+            id: u32,
+            handle: String,
+            offset: u64,
+            len: u32,
+        ) -> impl Future<Output = Result<Data, Self::Error>> + Send {
+            let result = self
+                .handles
+                .lock()
+                .expect("handles")
+                .get(&handle)
+                .map(|file| Data {
+                    id,
+                    data: format!("{file}:{offset}:{len}").into_bytes(),
+                })
+                .ok_or(StatusCode::Failure);
+
+            async move { result }
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_handlers_can_share_handles_across_users() {
+        let shared = Arc::new(Mutex::new(HashMap::new()));
+        let mut alice = SharedRawHandler {
+            user: "alice",
+            handles: Arc::clone(&shared),
+        };
+        let mut bob = SharedRawHandler {
+            user: "bob",
+            handles: shared,
+        };
+
+        let alice_handle = Handler::open(
+            &mut alice,
+            1,
+            "owner-file.txt".into(),
+            OpenFlags::READ,
+            FileAttributes::empty(),
+        )
+        .await
+        .unwrap()
+        .handle;
+
+        assert_eq!(
+            Handler::read(&mut bob, 2, alice_handle, 7, 9)
+                .await
+                .unwrap()
+                .data,
+            b"alice:owner-file.txt:7:9"
+        );
+    }
+}
