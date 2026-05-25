@@ -36,6 +36,7 @@ rand = "0.10.1"
 env_logger = "0.11"
 anyhow = "1.0"
 criterion = { version = "0.5", features = ["async_tokio"] }
+iai-callgrind = "0.16.1"
 
 [features]
 async-trait = ["dep:async-trait"]
@@ -53,3 +54,7 @@ required-features = ["russh-channel-data"]
 name = "upload_benchmark"
 harness = false
 required-features = ["russh-channel-data"]
+
+[[bench]]
+name = "packet_iai"
+harness = false
