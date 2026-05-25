@@ -23,7 +23,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"
 bitflags = { version = "2.11.1", features = ["serde"] }
 async-trait = { version = "0.1.89", optional = true }
-russh = { git = "https://github.com/Eugeny/russh", branch = "main", optional = true, default-features = false, features = ["aws-lc-rs", "flate2"] }
+russh = { git = "https://github.com/mjc/russh", branch = "mjc/own-inbound-channel-payloads", optional = true, default-features = false, features = ["aws-lc-rs", "flate2"] }
 
 thiserror = "2.0.18"
 chrono = "0.4.44"
