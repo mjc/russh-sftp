@@ -132,11 +132,12 @@ where
         return Err(err);
     }
 
+    let should_reset_write_buf = write_buf.capacity() > MAX_REUSABLE_WRITE_BUF_SIZE;
     send_bytes(write_buf.split().freeze())
         .await
         .map_err(|err| Error::IO(err.to_string()))?;
 
-    if write_buf.capacity() > MAX_REUSABLE_WRITE_BUF_SIZE {
+    if should_reset_write_buf {
         *write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
     }
 
@@ -195,7 +196,10 @@ where
         loop {
             match process_handler(&mut stream, &mut handler, &mut read_buf, &mut write_buf).await {
                 Err(Error::UnexpectedEof) => break,
-                Err(err) => warn!("{}", err),
+                Err(err) => {
+                    warn!("{}", err);
+                    break;
+                }
                 Ok(_) => (),
             }
         }
@@ -264,7 +268,10 @@ where
         .await
         {
             Err(Error::UnexpectedEof) => break,
-            Err(err) => warn!("{}", err),
+            Err(err) => {
+                warn!("{}", err);
+                break;
+            }
             Ok(_) => (),
         }
     }
@@ -298,7 +305,10 @@ pub async fn serve_with_packet_sender<S, H, F, Fut, E>(
         .await
         {
             Err(Error::UnexpectedEof) => break,
-            Err(err) => warn!("{}", err),
+            Err(err) => {
+                warn!("{}", err);
+                break;
+            }
             Ok(_) => (),
         }
     }

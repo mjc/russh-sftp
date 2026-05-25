@@ -10,11 +10,13 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
+    select,
     sync::{mpsc, oneshot, RwLock},
     time,
 };
+use tokio_util::sync::CancellationToken;
 
-use super::{error::Error, run, Handler};
+use super::{error::Error, run_with_cancellation, Handler};
 use crate::{
     de,
     extensions::{
@@ -149,6 +151,7 @@ pub struct RawSftpSession {
     next_req_id: AtomicU32,
     handles: AtomicU64,
     options: Options,
+    session_closed: CancellationToken,
 }
 
 macro_rules! into_with_status {
@@ -177,13 +180,14 @@ impl RawSftpSession {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let req_map = Arc::new(DashMap::new());
+        let session_closed = CancellationToken::new();
         let inner = SessionInner {
             version: None,
             requests: req_map.clone(),
         };
 
         Self {
-            tx: run(stream, inner),
+            tx: run_with_cancellation(stream, inner, session_closed.clone()),
             requests: req_map,
             next_req_id: AtomicU32::new(1),
             handles: AtomicU64::new(0),
@@ -191,6 +195,7 @@ impl RawSftpSession {
                 timeout: RwLock::new(10),
                 limits: Arc::new(Limits::default()),
             },
+            session_closed,
         }
     }
 
@@ -225,17 +230,36 @@ impl RawSftpSession {
 
         let timeout = *self.options.timeout.read().await;
         if timeout == 0 {
-            return rx
-                .await
-                .map_err(|_| Error::UnexpectedBehavior("request receiver dropped".into()))?;
+            return self.wait_for_response(id, rx).await;
         }
 
-        match time::timeout(Duration::from_secs(timeout), rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(Error::UnexpectedBehavior("request receiver dropped".into())),
-            Err(error) => {
+        select! {
+            result = time::timeout(Duration::from_secs(timeout), rx) => match result {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => Err(Error::UnexpectedBehavior("request receiver dropped".into())),
+                Err(error) => {
+                    self.requests.remove(&id);
+                    Err(error.into())
+                }
+            },
+            _ = self.session_closed.cancelled() => {
                 self.requests.remove(&id);
-                Err(error.into())
+                Err(Error::UnexpectedBehavior("session closed".into()))
+            }
+        }
+    }
+
+    async fn wait_for_response(
+        &self,
+        id: Option<u32>,
+        rx: oneshot::Receiver<SftpResult<Packet>>,
+    ) -> SftpResult<Packet> {
+        select! {
+            result = rx => result
+                .map_err(|_| Error::UnexpectedBehavior("request receiver dropped".into()))?,
+            _ = self.session_closed.cancelled() => {
+                self.requests.remove(&id);
+                Err(Error::UnexpectedBehavior("session closed".into()))
             }
         }
     }

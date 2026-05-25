@@ -26,6 +26,7 @@ const MIB: usize = 1024 * 1024;
 const MANAGED_SERVER_USER: &str = "benchmark";
 const MANAGED_SERVER_PASSWORD: &str = "benchmark";
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const MANAGED_SERVER_START_ATTEMPTS: usize = 5;
 static RUN_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
@@ -129,39 +130,55 @@ fn start_managed_sftp_server() -> Result<(BenchConfig, BenchServer)> {
         build_sftp_s3_server(&server_dir)?;
     }
 
-    let port = pick_available_port()?;
     let log_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("sftp-bench-server.log");
-    let log = open_server_log(&log_path)?;
-    let child = Command::new(&server_bin)
-        .args([
-            "--backend",
-            "memory",
-            "--port",
-            &port.to_string(),
-            "--user",
-            &format!("{MANAGED_SERVER_USER}:{MANAGED_SERVER_PASSWORD}"),
-        ])
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log))
-        .spawn()
-        .with_context(|| format!("failed to start {}", server_bin.display()))?;
 
-    let mut server = BenchServer { child, log_path };
-    wait_for_server("127.0.0.1", port, &mut server)?;
+    for attempt in 1..=MANAGED_SERVER_START_ATTEMPTS {
+        let port = pick_available_port()?;
+        let log = open_server_log(&log_path)?;
+        let child = Command::new(&server_bin)
+            .args([
+                "--backend",
+                "memory",
+                "--port",
+                &port.to_string(),
+                "--user",
+                &format!("{MANAGED_SERVER_USER}:{MANAGED_SERVER_PASSWORD}"),
+            ])
+            .stdout(Stdio::from(log.try_clone()?))
+            .stderr(Stdio::from(log))
+            .spawn()
+            .with_context(|| format!("failed to start {}", server_bin.display()))?;
 
-    Ok((
-        BenchConfig {
-            addr: format!("127.0.0.1:{port}"),
-            username: env::var("SFTP_BENCH_USER")
-                .unwrap_or_else(|_| MANAGED_SERVER_USER.to_string()),
-            password: env::var("SFTP_BENCH_PASSWORD")
-                .unwrap_or_else(|_| MANAGED_SERVER_PASSWORD.to_string()),
-            remote_dir: env::var("SFTP_BENCH_DIR").unwrap_or_else(|_| ".".to_string()),
-        },
-        server,
-    ))
+        let mut server = BenchServer {
+            child,
+            log_path: log_path.clone(),
+        };
+
+        match wait_for_server("127.0.0.1", port, &mut server) {
+            Ok(()) => {
+                return Ok((
+                    BenchConfig {
+                        addr: format!("127.0.0.1:{port}"),
+                        username: env::var("SFTP_BENCH_USER")
+                            .unwrap_or_else(|_| MANAGED_SERVER_USER.to_string()),
+                        password: env::var("SFTP_BENCH_PASSWORD")
+                            .unwrap_or_else(|_| MANAGED_SERVER_PASSWORD.to_string()),
+                        remote_dir: env::var("SFTP_BENCH_DIR").unwrap_or_else(|_| ".".to_string()),
+                    },
+                    server,
+                ));
+            }
+            Err(err) if attempt < MANAGED_SERVER_START_ATTEMPTS => {
+                drop(server);
+                debug!("managed benchmark server startup attempt {attempt} failed: {err}");
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    unreachable!("managed server start attempts loop always returns")
 }
 
 fn sftp_s3_dir() -> Result<PathBuf> {
@@ -376,6 +393,10 @@ fn benchmark_paths(
 }
 
 fn remote_path(remote_dir: &str, file_name: &str) -> String {
+    if remote_dir == "/" {
+        return format!("/{file_name}");
+    }
+
     match remote_dir.trim_end_matches('/') {
         "" | "." => file_name.to_string(),
         dir => format!("{dir}/{file_name}"),

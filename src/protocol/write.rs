@@ -51,6 +51,7 @@ impl_packet_for!(Write);
 mod tests {
     use super::*;
     use crate::{de, ser};
+    use bytes::{BufMut, BytesMut};
 
     #[test]
     fn write_roundtrips_empty_small_and_large_payloads() {
@@ -85,5 +86,36 @@ mod tests {
             assert_eq!(deserialized.offset, original.offset);
             assert_eq!(deserialized.data, original.data);
         }
+    }
+
+    #[test]
+    fn write_from_bytes_parses_directly() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u32(11);
+        bytes.put_u32(6);
+        bytes.extend_from_slice(b"handle");
+        bytes.put_u64(99);
+        bytes.put_u32(4);
+        bytes.extend_from_slice(b"data");
+
+        let parsed = Write::from_bytes(&mut bytes.freeze()).expect("parse write");
+
+        assert_eq!(parsed.id, 11);
+        assert_eq!(parsed.handle, Bytes::from_static(b"handle"));
+        assert_eq!(parsed.offset, 99);
+        assert_eq!(parsed.data, Bytes::from_static(b"data"));
+    }
+
+    #[test]
+    fn write_from_bytes_rejects_truncated_payload() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u32(11);
+        bytes.put_u32(6);
+        bytes.extend_from_slice(b"handle");
+        bytes.put_u64(99);
+        bytes.put_u32(4);
+        bytes.extend_from_slice(b"dat");
+
+        assert!(Write::from_bytes(&mut bytes.freeze()).is_err());
     }
 }
