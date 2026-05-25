@@ -94,6 +94,12 @@ impl SftpSession {
         self.session.close_session()
     }
 
+    /// Returns limits advertised by the server, when it supports the
+    /// limits@openssh.com extension.
+    pub fn limits(&self) -> Option<&Limits> {
+        self.extensions.limits.as_deref()
+    }
+
     /// Attempts to open a file in read-only mode.
     pub async fn open<T: Into<String>>(&self, filename: T) -> SftpResult<File> {
         self.open_with_flags(filename, OpenFlags::READ).await
