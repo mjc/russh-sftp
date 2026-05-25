@@ -48,9 +48,18 @@ iai-callgrind = "0.16.1"
 async-trait = ["dep:async-trait"]
 russh-channel-data = ["dep:russh"]
 
+[[example]]
+name = "client"
+required-features = ["russh-channel-data"]
+
+[[example]]
+name = "server"
+required-features = ["russh-channel-data"]
+
 [[bench]]
 name = "upload_benchmark"
 harness = false
+required-features = ["russh-channel-data"]
 
 [[bench]]
 name = "server_session_paths"
