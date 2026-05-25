@@ -68,6 +68,14 @@ impl DataPayload {
         }
     }
 
+    pub(crate) fn try_prepend(&mut self, prefix: &[u8]) -> bool {
+        match self {
+            Self::Bytes(_) => false,
+            #[cfg(feature = "russh-channel-data")]
+            Self::Channel(data) => data.try_prepend(prefix),
+        }
+    }
+
     #[cfg(feature = "russh-channel-data")]
     pub fn into_channel_data(self) -> russh::ChannelData {
         match self {
