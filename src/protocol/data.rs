@@ -47,7 +47,7 @@ impl Data {
 #[derive(Debug)]
 pub enum DataPayload {
     Bytes(Bytes),
-    #[cfg(feature = "russh-channel-data")]
+    #[cfg(all(feature = "russh-channel-data", not(target_arch = "wasm32")))]
     Channel(russh::ChannelData),
 }
 
@@ -63,7 +63,7 @@ impl DataPayload {
     pub fn into_bytes(self) -> Bytes {
         match self {
             Self::Bytes(data) => data,
-            #[cfg(feature = "russh-channel-data")]
+            #[cfg(all(feature = "russh-channel-data", not(target_arch = "wasm32")))]
             Self::Channel(data) => Bytes::copy_from_slice(data.as_ref()),
         }
     }
@@ -72,12 +72,12 @@ impl DataPayload {
         let _ = prefix;
         match self {
             Self::Bytes(_) => false,
-            #[cfg(feature = "russh-channel-data")]
+            #[cfg(all(feature = "russh-channel-data", not(target_arch = "wasm32")))]
             Self::Channel(data) => data.try_prepend(prefix),
         }
     }
 
-    #[cfg(feature = "russh-channel-data")]
+    #[cfg(all(feature = "russh-channel-data", not(target_arch = "wasm32")))]
     pub fn into_channel_data(self) -> russh::ChannelData {
         match self {
             Self::Bytes(data) => data.into(),
@@ -90,7 +90,7 @@ impl AsRef<[u8]> for DataPayload {
     fn as_ref(&self) -> &[u8] {
         match self {
             Self::Bytes(data) => data.as_ref(),
-            #[cfg(feature = "russh-channel-data")]
+            #[cfg(all(feature = "russh-channel-data", not(target_arch = "wasm32")))]
             Self::Channel(data) => data.as_ref(),
         }
     }
@@ -108,7 +108,7 @@ impl From<Vec<u8>> for DataPayload {
     }
 }
 
-#[cfg(feature = "russh-channel-data")]
+#[cfg(all(feature = "russh-channel-data", not(target_arch = "wasm32")))]
 impl From<russh::ChannelData> for DataPayload {
     fn from(data: russh::ChannelData) -> Self {
         Self::Channel(data)

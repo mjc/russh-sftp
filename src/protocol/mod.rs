@@ -715,7 +715,7 @@ mod tests {
         assert_eq!(reassembled, contiguous);
     }
 
-    #[cfg(feature = "russh-channel-data")]
+    #[cfg(all(feature = "russh-channel-data", not(target_arch = "wasm32")))]
     #[test]
     fn split_data_serialization_uses_reusable_prefix_headroom() {
         use std::sync::Arc;

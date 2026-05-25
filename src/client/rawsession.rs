@@ -50,11 +50,17 @@ impl SessionInner {
                 Ok(())
             };
 
-            sender
-                .send(validate.clone().map(|_| packet))
-                .map_err(|_| Error::UnexpectedBehavior("request receiver dropped".to_owned()))?;
+            if sender.send(validate.clone().map(|_| packet)).is_err() && id.is_some() {
+                return Err(Error::UnexpectedBehavior(
+                    "request receiver dropped".to_owned(),
+                ));
+            }
 
             return validate;
+        }
+
+        if id.is_none() && self.version.is_none() {
+            return Ok(());
         }
 
         Err(Error::UnexpectedBehavior(format!(

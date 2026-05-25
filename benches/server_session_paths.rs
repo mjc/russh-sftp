@@ -22,6 +22,7 @@ fn ok_status(id: u32) -> Status {
 
 struct RawHandler;
 
+#[allow(clippy::manual_async_fn)]
 impl Handler for RawHandler {
     type Error = StatusCode;
 
@@ -71,6 +72,7 @@ impl Handler for RawHandler {
 
 struct TypedHandler;
 
+#[allow(clippy::manual_async_fn)]
 impl SessionHandler for TypedHandler {
     type Error = StatusCode;
     type File = String;

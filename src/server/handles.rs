@@ -96,14 +96,12 @@ impl<F, D> SessionHandles<F, D> {
 
     pub fn insert_file(&mut self, value: F) -> FileHandle {
         let (index, generation) = Self::insert_slot(&mut self.files, &mut self.free_file, value);
-        let handle = self.new_handle::<FileTag>(index, generation);
-        handle
+        self.new_handle::<FileTag>(index, generation)
     }
 
     pub fn insert_dir(&mut self, value: D) -> DirHandle {
         let (index, generation) = Self::insert_slot(&mut self.dirs, &mut self.free_dir, value);
-        let handle = self.new_handle::<DirTag>(index, generation);
-        handle
+        self.new_handle::<DirTag>(index, generation)
     }
 
     pub fn get_file_mut(&mut self, handle: &FileHandle) -> Option<&mut F> {

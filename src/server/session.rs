@@ -471,6 +471,7 @@ mod tests {
         closed_files: Vec<String>,
     }
 
+    #[allow(clippy::manual_async_fn)]
     impl SessionHandler for TestHandler {
         type Error = StatusCode;
         type File = String;
