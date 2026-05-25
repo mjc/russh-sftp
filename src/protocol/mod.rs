@@ -125,36 +125,50 @@ macro_rules! impl_packet_for {
 pub(crate) use impl_packet_for;
 pub(crate) use impl_request_id;
 
-#[derive(Debug)]
-pub enum Packet {
-    Init(Init),
-    Version(Version),
-    Open(Open),
-    Close(Close),
-    Read(Read),
-    Write(Write),
-    Lstat(Lstat),
-    Fstat(Fstat),
-    SetStat(SetStat),
-    FSetStat(FSetStat),
-    OpenDir(OpenDir),
-    ReadDir(ReadDir),
-    Remove(Remove),
-    MkDir(MkDir),
-    RmDir(RmDir),
-    RealPath(RealPath),
-    Stat(Stat),
-    Rename(Rename),
-    ReadLink(ReadLink),
-    Symlink(Symlink),
-    Status(Status),
-    Handle(Handle),
-    Data(Data),
-    Name(Name),
-    Attrs(Attrs),
-    Extended(Extended),
-    ExtendedReply(ExtendedReply),
+macro_rules! packet_types {
+    ($macro:ident) => {
+        $macro! {
+            Init => SSH_FXP_INIT,
+            Version => SSH_FXP_VERSION,
+            Open => SSH_FXP_OPEN,
+            Close => SSH_FXP_CLOSE,
+            Read => SSH_FXP_READ,
+            Write => SSH_FXP_WRITE,
+            Lstat => SSH_FXP_LSTAT,
+            Fstat => SSH_FXP_FSTAT,
+            SetStat => SSH_FXP_SETSTAT,
+            FSetStat => SSH_FXP_FSETSTAT,
+            OpenDir => SSH_FXP_OPENDIR,
+            ReadDir => SSH_FXP_READDIR,
+            Remove => SSH_FXP_REMOVE,
+            MkDir => SSH_FXP_MKDIR,
+            RmDir => SSH_FXP_RMDIR,
+            RealPath => SSH_FXP_REALPATH,
+            Stat => SSH_FXP_STAT,
+            Rename => SSH_FXP_RENAME,
+            ReadLink => SSH_FXP_READLINK,
+            Symlink => SSH_FXP_SYMLINK,
+            Status => SSH_FXP_STATUS,
+            Handle => SSH_FXP_HANDLE,
+            Data => SSH_FXP_DATA,
+            Name => SSH_FXP_NAME,
+            Attrs => SSH_FXP_ATTRS,
+            Extended => SSH_FXP_EXTENDED,
+            ExtendedReply => SSH_FXP_EXTENDED_REPLY,
+        }
+    };
 }
+
+macro_rules! define_packet_enum {
+    ($($variant:ident => $type_const:ident),+ $(,)?) => {
+        #[derive(Debug)]
+        pub enum Packet {
+            $($variant($variant),)+
+        }
+    };
+}
+
+packet_types!(define_packet_enum);
 
 impl Packet {
     pub fn get_request_id(&self) -> u32 {
@@ -224,46 +238,21 @@ where
     let r#type = bytes.try_get_u8()?;
     debug!("packet type {}", r#type);
 
-    let request = match r#type {
-        SSH_FXP_INIT => Packet::Init(Init::from_bytes(bytes)?),
-        SSH_FXP_VERSION => Packet::Version(Version::from_bytes(bytes)?),
-        SSH_FXP_OPEN => Packet::Open(Open::from_bytes(bytes)?),
-        SSH_FXP_CLOSE => Packet::Close(Close::from_bytes(bytes)?),
-        // Manual deserialization for consistency with Write/Data
-        SSH_FXP_READ => Packet::Read(Read::from_bytes(bytes)?),
-        // Zero-copy deserialization - bypasses serde to avoid Vec allocation
-        SSH_FXP_WRITE => Packet::Write(Write::from_bytes(bytes)?),
-        SSH_FXP_LSTAT => Packet::Lstat(Lstat::from_bytes(bytes)?),
-        SSH_FXP_FSTAT => Packet::Fstat(Fstat::from_bytes(bytes)?),
-        SSH_FXP_SETSTAT => Packet::SetStat(SetStat::from_bytes(bytes)?),
-        SSH_FXP_FSETSTAT => Packet::FSetStat(FSetStat::from_bytes(bytes)?),
-        SSH_FXP_OPENDIR => Packet::OpenDir(OpenDir::from_bytes(bytes)?),
-        SSH_FXP_READDIR => Packet::ReadDir(ReadDir::from_bytes(bytes)?),
-        SSH_FXP_REMOVE => Packet::Remove(Remove::from_bytes(bytes)?),
-        SSH_FXP_MKDIR => Packet::MkDir(MkDir::from_bytes(bytes)?),
-        SSH_FXP_RMDIR => Packet::RmDir(RmDir::from_bytes(bytes)?),
-        SSH_FXP_REALPATH => Packet::RealPath(RealPath::from_bytes(bytes)?),
-        SSH_FXP_STAT => Packet::Stat(Stat::from_bytes(bytes)?),
-        SSH_FXP_RENAME => Packet::Rename(Rename::from_bytes(bytes)?),
-        SSH_FXP_READLINK => Packet::ReadLink(ReadLink::from_bytes(bytes)?),
-        SSH_FXP_SYMLINK => Packet::Symlink(Symlink::from_bytes(bytes)?),
-        SSH_FXP_STATUS => Packet::Status(Status::from_bytes(bytes)?),
-        SSH_FXP_HANDLE => Packet::Handle(Handle::from_bytes(bytes)?),
-        // Zero-copy deserialization - bypasses serde to avoid Vec allocation
-        SSH_FXP_DATA => Packet::Data(Data::from_bytes(bytes)?),
-        SSH_FXP_NAME => Packet::Name(Name::from_bytes(bytes)?),
-        SSH_FXP_ATTRS => Packet::Attrs(Attrs::from_bytes(bytes)?),
-        SSH_FXP_EXTENDED => Packet::Extended(Extended::from_bytes(bytes)?),
-        SSH_FXP_EXTENDED_REPLY => Packet::ExtendedReply(ExtendedReply::from_bytes(bytes)?),
-        _ => return Err(Error::BadMessage("unknown type".to_owned())),
-    };
+    macro_rules! deserialize_packet {
+        ($($variant:ident => $type_const:ident),+ $(,)?) => {
+            match r#type {
+                $($type_const => Packet::$variant($variant::from_bytes(bytes)?),)+
+                _ => return Err(Error::BadMessage("unknown type".to_owned())),
+            }
+        };
+    }
 
-    Ok(request)
+    Ok(packet_types!(deserialize_packet))
 }
 
-macro_rules! serialize_packet {
-    ($($variant:ident => $type_const:expr),+ $(,)?) => {
-        |packet: Packet, bytes: &mut BytesMut| -> Result<(), Error> {
+macro_rules! define_packet_serializer {
+    ($($variant:ident => $type_const:ident),+ $(,)?) => {
+        fn serialize_packet_payload(packet: Packet, bytes: &mut BytesMut) -> Result<(), Error> {
             match packet {
                 $(
                     Packet::$variant(v) => {
@@ -271,12 +260,13 @@ macro_rules! serialize_packet {
                         ser::to_bytes_into(&v, bytes)?;
                     }
                 )+
-                _ => unreachable!("packet variant should have been handled before serializer"),
             }
             Ok(())
         }
     };
 }
+
+packet_types!(define_packet_serializer);
 
 pub enum SerializedPacket {
     Contiguous(Bytes),
@@ -498,34 +488,7 @@ pub(crate) fn serialize_packet_into_buf(packet: Packet, buf: &mut BytesMut) -> R
                 status.serialize_into(buf)?;
             }
             other => {
-                let serializer = serialize_packet!(
-                    Init => SSH_FXP_INIT,
-                    Version => SSH_FXP_VERSION,
-                    Open => SSH_FXP_OPEN,
-                    Close => SSH_FXP_CLOSE,
-                    Read => SSH_FXP_READ,
-                    Write => SSH_FXP_WRITE,
-                    Lstat => SSH_FXP_LSTAT,
-                    Fstat => SSH_FXP_FSTAT,
-                    SetStat => SSH_FXP_SETSTAT,
-                    FSetStat => SSH_FXP_FSETSTAT,
-                    OpenDir => SSH_FXP_OPENDIR,
-                    ReadDir => SSH_FXP_READDIR,
-                    Remove => SSH_FXP_REMOVE,
-                    MkDir => SSH_FXP_MKDIR,
-                    RmDir => SSH_FXP_RMDIR,
-                    RealPath => SSH_FXP_REALPATH,
-                    Stat => SSH_FXP_STAT,
-                    Rename => SSH_FXP_RENAME,
-                    ReadLink => SSH_FXP_READLINK,
-                    Symlink => SSH_FXP_SYMLINK,
-                    Handle => SSH_FXP_HANDLE,
-                    Name => SSH_FXP_NAME,
-                    Attrs => SSH_FXP_ATTRS,
-                    Extended => SSH_FXP_EXTENDED,
-                    ExtendedReply => SSH_FXP_EXTENDED_REPLY,
-                );
-                serializer(other, buf)?;
+                serialize_packet_payload(other, buf)?;
             }
         }
 
