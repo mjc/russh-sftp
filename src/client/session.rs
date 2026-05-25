@@ -186,15 +186,13 @@ impl SftpSession {
         loop {
             match self.session.readdir_bytes(handle.clone()).await {
                 Ok(name) => {
-                    files = name
-                        .files
-                        .into_iter()
-                        .map(|f| (f.filename, f.attrs))
-                        .chain(files)
-                        .collect();
+                    files.extend(name.files.into_iter().map(|f| (f.filename, f.attrs)));
                 }
                 Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
-                Err(err) => return Err(err),
+                Err(err) => {
+                    let _ = self.session.close_bytes(handle).await;
+                    return Err(err);
+                }
             }
         }
 

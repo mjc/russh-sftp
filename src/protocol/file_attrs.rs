@@ -297,7 +297,7 @@ impl FileAttributes {
     pub(crate) fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, Error> {
         let attrs = FileAttr::from_bits_truncate(input.try_get_u32()?);
 
-        Ok(Self {
+        let result = Self {
             size: if attrs.contains(FileAttr::SIZE) {
                 Some(input.try_get_u64()?)
             } else {
@@ -330,7 +330,17 @@ impl FileAttributes {
             } else {
                 None
             },
-        })
+        };
+
+        if attrs.contains(FileAttr::EXTENDED) {
+            let count = input.try_get_u32()?;
+            for _ in 0..count {
+                let _type = input.try_get_bytes()?;
+                let _data = input.try_get_bytes()?;
+            }
+        }
+
+        Ok(result)
     }
 }
 
@@ -527,5 +537,23 @@ mod tests {
         assert_eq!(parsed.permissions, serde_parsed.permissions);
         assert_eq!(parsed.atime, serde_parsed.atime);
         assert_eq!(parsed.mtime, serde_parsed.mtime);
+    }
+
+    #[test]
+    fn file_attributes_from_bytes_consumes_extended_pairs() {
+        let mut bytes = bytes::BytesMut::new();
+        bytes::BufMut::put_u32(&mut bytes, FileAttr::EXTENDED.bits());
+        bytes::BufMut::put_u32(&mut bytes, 1);
+        bytes::BufMut::put_u32(&mut bytes, 4);
+        bytes.extend_from_slice(b"type");
+        bytes::BufMut::put_u32(&mut bytes, 4);
+        bytes.extend_from_slice(b"data");
+        bytes::BufMut::put_u32(&mut bytes, 0xDEADBEEF);
+
+        let mut bytes = bytes.freeze();
+        let parsed = FileAttributes::from_bytes(&mut bytes).expect("manual parse attrs");
+
+        assert!(parsed.is_empty());
+        assert_eq!(bytes.try_get_u32().expect("trailing sentinel"), 0xDEADBEEF);
     }
 }

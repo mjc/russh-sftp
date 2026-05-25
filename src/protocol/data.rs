@@ -192,4 +192,17 @@ mod tests {
 
         assert_eq!(deserialized.data.as_ref(), large_data.as_slice());
     }
+
+    #[test]
+    fn data_from_bytes_parses_directly() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u32(7);
+        bytes.put_u32(5);
+        bytes.extend_from_slice(b"hello");
+
+        let parsed = Data::from_bytes(&mut bytes.freeze()).expect("parse data");
+
+        assert_eq!(parsed.id, 7);
+        assert_eq!(parsed.data, Bytes::from_static(b"hello"));
+    }
 }

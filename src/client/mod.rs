@@ -60,7 +60,19 @@ where
 
 /// Run processing stream as SFTP client. Is a simple handler of incoming
 /// and outgoing packets. Can be used for non-standard implementations
-pub fn run<S, H>(stream: S, mut handler: H) -> mpsc::UnboundedSender<Bytes>
+pub fn run<S, H>(stream: S, handler: H) -> mpsc::UnboundedSender<Bytes>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    H: Handler + Send + 'static,
+{
+    run_with_cancellation(stream, handler, CancellationToken::new())
+}
+
+pub(crate) fn run_with_cancellation<S, H>(
+    stream: S,
+    mut handler: H,
+    rc: CancellationToken,
+) -> mpsc::UnboundedSender<Bytes>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     H: Handler + Send + 'static,
@@ -68,7 +80,6 @@ where
     let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
     let (mut rd, mut wr) = io::split(stream);
 
-    let rc = CancellationToken::new();
     let wc = rc.clone();
     {
         tokio::spawn(async move {

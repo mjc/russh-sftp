@@ -150,11 +150,9 @@ impl File {
             return Ok(());
         }
 
+        self.session.close_bytes(self.handle.clone()).await?;
         self.closed = true;
-        self.session
-            .close_bytes(self.handle.clone())
-            .await
-            .map(|_| ())
+        Ok(())
     }
 }
 
@@ -250,9 +248,6 @@ impl AsyncRead for File {
         loop {
             match Pin::new(&mut self.state.read_pending).poll_next(cx) {
                 Poll::Pending => {
-                    if self.state.read_eof == Some(self.pos) {
-                        return Poll::Ready(Ok(()));
-                    }
                     return Poll::Pending;
                 }
                 Poll::Ready(None) => {
@@ -459,9 +454,11 @@ impl AsyncWrite for File {
         })
         .poll(cx);
 
-        if poll.is_ready() {
+        if let Poll::Ready(Ok(())) = poll {
             self.state.f_shutdown = None;
             self.closed = true;
+        } else if poll.is_ready() {
+            self.state.f_shutdown = None;
         }
 
         poll

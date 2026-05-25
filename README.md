@@ -13,6 +13,7 @@ The main idea of the project is to provide an implementation for interacting wit
 - [Simple server](https://github.com/AspectUnk/russh-sftp/blob/master/examples/server.rs)
 
 ## Migration note
+
 `server::run` now drives the byte-preserving server path. The default `server::Handler` receives opaque handles and write payloads as `bytes::Bytes`, matching the protocol packet fields and avoiding hot-path conversions.
 
 ## What's ready?
