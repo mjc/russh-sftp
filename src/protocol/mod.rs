@@ -435,7 +435,7 @@ pub(crate) fn serialize_packet_split(
     packet: Packet,
     buf: &mut BytesMut,
 ) -> Result<SerializedPacket, Error> {
-    if let Packet::Data(data) = packet {
+    if let Packet::Data(mut data) = packet {
         let payload_len = checked_data_packet_payload_len(&data)?;
         let packet_len = checked_packet_length(payload_len)?;
         let data_len = u32::try_from(data.data.len())
@@ -447,6 +447,14 @@ pub(crate) fn serialize_packet_split(
         buf.put_u8(SSH_FXP_DATA);
         buf.put_u32(data.id);
         buf.put_u32(data_len);
+
+        if data.data.try_prepend(buf) {
+            buf.clear();
+            return Ok(SerializedPacket::Split {
+                header: Bytes::new(),
+                data: data.data,
+            });
+        }
 
         return Ok(SerializedPacket::Split {
             header: buf.split().freeze(),
@@ -624,6 +632,66 @@ mod tests {
         };
 
         assert_eq!(reassembled, contiguous);
+    }
+
+    #[cfg(feature = "russh-channel-data")]
+    #[test]
+    fn split_data_serialization_uses_reusable_prefix_headroom() {
+        use std::sync::Arc;
+
+        struct DropRecycler;
+
+        impl russh::ChannelDataRecycler for DropRecycler {
+            fn recycle(&self, _data: Vec<u8>) {}
+        }
+
+        let mut backing = vec![0; 13];
+        backing.extend_from_slice(b"payload");
+        let reusable =
+            russh::ReusableChannelData::try_new_with_range(backing, 13, 7, Arc::new(DropRecycler))
+                .unwrap();
+        let mut buf = BytesMut::new();
+
+        let split = serialize_packet_split(
+            Packet::Data(Data {
+                id: 7,
+                data: russh::ChannelData::Reusable(reusable).into(),
+            }),
+            &mut buf,
+        )
+        .expect("split serialize failed");
+
+        match split {
+            SerializedPacket::Split { header, data } => {
+                assert!(header.is_empty());
+                assert_eq!(
+                    data.as_ref(),
+                    &[
+                        0,
+                        0,
+                        0,
+                        16,
+                        SSH_FXP_DATA,
+                        0,
+                        0,
+                        0,
+                        7,
+                        0,
+                        0,
+                        0,
+                        7,
+                        b'p',
+                        b'a',
+                        b'y',
+                        b'l',
+                        b'o',
+                        b'a',
+                        b'd'
+                    ]
+                );
+            }
+            SerializedPacket::Contiguous(_) => panic!("expected split packet"),
+        }
     }
 
     #[test]
