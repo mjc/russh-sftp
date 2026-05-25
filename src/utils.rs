@@ -64,14 +64,12 @@ async fn read_packet_payload<S: AsyncRead + Unpin>(
 pub(crate) async fn read_packet_into_buf<'a, S: AsyncRead + Unpin>(
     stream: &mut S,
     buf: &'a mut BytesMut,
-    max_length: usize,
 ) -> Result<PacketBuffer<'a>, Error> {
     let length = stream.read_u32().await? as usize;
-    let max_length = max_length.min(MAX_PACKET_SIZE);
-    if length > max_length {
+    if length > MAX_PACKET_SIZE {
         return Err(Error::BadMessage(format!(
             "packet length {} exceeds maximum {}",
-            length, max_length
+            length, MAX_PACKET_SIZE
         )));
     }
 
@@ -96,7 +94,7 @@ pub async fn read_packet_into<S: AsyncRead + Unpin>(
     stream: &mut S,
     buf: &mut BytesMut,
 ) -> Result<Bytes, Error> {
-    match read_packet_into_buf(stream, buf, MAX_PACKET_SIZE).await? {
+    match read_packet_into_buf(stream, buf).await? {
         PacketBuffer::Reusable(buf) => Ok(buf.clone().freeze()),
         PacketBuffer::Owned(buf) => Ok(buf.freeze()),
     }
@@ -159,45 +157,33 @@ mod tests {
         chunks
     }
 
-    #[tokio::test]
-    async fn read_packet_into_supports_empty_packets() {
-        let mut reader = ChunkedReader::new(packet_chunks(vec![vec![]]));
-        let mut buf = BytesMut::with_capacity(16);
+    async fn read_packet(chunks: Vec<Vec<u8>>, capacity: usize) -> Result<Bytes, Error> {
+        let mut reader = ChunkedReader::new(packet_chunks(chunks));
+        let mut buf = BytesMut::with_capacity(capacity);
+        read_packet_into(&mut reader, &mut buf).await
+    }
 
-        let packet = read_packet_into(&mut reader, &mut buf)
-            .await
-            .expect("read packet");
-
-        assert!(packet.is_empty());
-        assert!(buf.is_empty());
+    fn assert_reusable(buffer: PacketBuffer<'_>, expected: &[u8]) {
+        match buffer {
+            PacketBuffer::Reusable(reusable) => assert_eq!(reusable.as_ref(), expected),
+            PacketBuffer::Owned(_) => panic!("expected reusable packet buffer"),
+        }
     }
 
     #[tokio::test]
-    async fn read_packet_into_reads_single_byte_packets() {
-        let mut reader = ChunkedReader::new(packet_chunks(vec![vec![0xAB]]));
-        let mut buf = BytesMut::with_capacity(16);
-
-        let packet = read_packet_into(&mut reader, &mut buf)
-            .await
-            .expect("read packet");
-
-        assert_eq!(&packet[..], &[0xAB]);
-    }
-
-    #[tokio::test]
-    async fn read_packet_into_handles_partial_reads() {
-        let mut reader = ChunkedReader::new(packet_chunks(vec![
-            b"he".to_vec(),
-            b"ll".to_vec(),
-            b"o".to_vec(),
-        ]));
-        let mut buf = BytesMut::with_capacity(2);
-
-        let packet = read_packet_into(&mut reader, &mut buf)
-            .await
-            .expect("read packet");
-
-        assert_eq!(&packet[..], b"hello");
+    async fn read_packet_into_reads_empty_single_byte_and_partial_packets() {
+        for (chunks, capacity, expected) in [
+            (vec![vec![]], 16, &b""[..]),
+            (vec![vec![0xAB]], 16, &[0xAB][..]),
+            (
+                vec![b"he".to_vec(), b"ll".to_vec(), b"o".to_vec()],
+                2,
+                &b"hello"[..],
+            ),
+        ] {
+            let packet = read_packet(chunks, capacity).await.expect("read packet");
+            assert_eq!(packet.as_ref(), expected);
+        }
     }
 
     #[tokio::test]
@@ -287,30 +273,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_packet_into_buf_returns_reusable_buffer_for_small_packets() {
+    async fn read_packet_into_buf_returns_reusable_or_owned_by_size() {
         let mut reader = ChunkedReader::new(packet_chunks(vec![b"ping".to_vec()]));
         let mut buf = BytesMut::with_capacity(16);
 
-        let result = read_packet_into_buf(&mut reader, &mut buf, MAX_PACKET_SIZE)
-            .await
-            .expect("read packet");
+        assert_reusable(
+            read_packet_into_buf(&mut reader, &mut buf)
+                .await
+                .expect("read small packet"),
+            b"ping",
+        );
 
-        if let PacketBuffer::Reusable(reusable) = result {
-            assert_eq!(reusable.as_ref(), b"ping");
-        } else {
-            panic!("Expected reusable packet buffer");
-        }
-    }
-
-    #[tokio::test]
-    async fn read_packet_into_buf_returns_owned_buffer_for_large_packets() {
         let payload = vec![0xEF; MAX_REUSABLE_PACKET_SIZE + 1];
         let mut reader = ChunkedReader::new(packet_chunks(vec![payload.clone()]));
-        let mut buf = BytesMut::with_capacity(32 * 1024);
 
-        let result = read_packet_into_buf(&mut reader, &mut buf, MAX_PACKET_SIZE)
+        let result = read_packet_into_buf(&mut reader, &mut buf)
             .await
-            .expect("read packet");
+            .expect("read large packet");
 
         if let PacketBuffer::Owned(owned) = result {
             assert_eq!(owned.freeze().as_ref(), payload.as_slice());
@@ -320,33 +299,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_packet_into_buf_handles_partial_reads() {
-        let mut reader = ChunkedReader::new(packet_chunks(vec![
-            b"pa".to_vec(),
-            b"r".to_vec(),
-            b"ti".to_vec(),
-            b"al".to_vec(),
-        ]));
-        let mut buf = BytesMut::with_capacity(8);
-
-        let result = read_packet_into_buf(&mut reader, &mut buf, MAX_PACKET_SIZE)
-            .await
-            .expect("read packet");
-
-        if let PacketBuffer::Reusable(reusable) = result {
-            assert_eq!(reusable.as_ref(), b"partial");
-        } else {
-            panic!("Expected reusable packet buffer");
-        }
-    }
-
-    #[tokio::test]
     async fn read_packet_into_buf_rejects_oversized_packets() {
         let too_large = (MAX_PACKET_SIZE as u32).wrapping_add(1);
         let mut reader = ChunkedReader::new(vec![too_large.to_be_bytes().to_vec()]);
         let mut buf = BytesMut::with_capacity(16);
 
-        let err = read_packet_into_buf(&mut reader, &mut buf, MAX_PACKET_SIZE)
+        let err = read_packet_into_buf(&mut reader, &mut buf)
             .await
             .expect_err("oversized packet should be rejected");
 

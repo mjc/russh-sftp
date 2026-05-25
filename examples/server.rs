@@ -107,6 +107,15 @@ struct SftpSession {
     files: HashMap<String, Vec<u8>>,
 }
 
+fn ok_status(id: u32) -> Status {
+    Status {
+        id,
+        status_code: StatusCode::Ok,
+        error_message: "Ok".into(),
+        language_tag: "en-US".into(),
+    }
+}
+
 impl russh_sftp::server::Handler for SftpSession {
     type Error = StatusCode;
 
@@ -130,12 +139,7 @@ impl russh_sftp::server::Handler for SftpSession {
     }
 
     async fn close(&mut self, id: u32, _handle: Bytes) -> Result<Status, Self::Error> {
-        Ok(Status {
-            id,
-            status_code: StatusCode::Ok,
-            error_message: "Ok".into(),
-            language_tag: "en-US".into(),
-        })
+        Ok(ok_status(id))
     }
 
     async fn open(
@@ -172,22 +176,12 @@ impl russh_sftp::server::Handler for SftpSession {
             file.resize(end, 0);
         }
         file[offset..end].copy_from_slice(&data);
-        Ok(Status {
-            id,
-            status_code: StatusCode::Ok,
-            error_message: "Ok".into(),
-            language_tag: "en-US".into(),
-        })
+        Ok(ok_status(id))
     }
 
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
         self.files.remove(&filename);
-        Ok(Status {
-            id,
-            status_code: StatusCode::Ok,
-            error_message: "Ok".into(),
-            language_tag: "en-US".into(),
-        })
+        Ok(ok_status(id))
     }
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {

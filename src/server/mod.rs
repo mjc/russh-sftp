@@ -77,13 +77,7 @@ where
     H: Handler + Send,
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut packet_buf = read_packet_into_buf(stream, read_buf).await?;
-
-    let response = match Packet::try_from(packet_buf.as_mut_bytes()) {
-        Ok(request) => process_request(request, handler).await,
-        Err(_) => Packet::error(0, StatusCode::BadMessage),
-    };
-
+    let response = read_response(stream, handler, read_buf).await?;
     let packet = match serialize_packet_split(response, write_buf) {
         Ok(packet) => packet,
         Err(err) => {
@@ -116,12 +110,7 @@ where
     Fut: Future<Output = Result<(), E>>,
     E: fmt::Display,
 {
-    let mut packet_buf = read_packet_into_buf(stream, read_buf).await?;
-
-    let response = match Packet::try_from(packet_buf.as_mut_bytes()) {
-        Ok(request) => process_request(request, handler).await,
-        Err(_) => Packet::error(0, StatusCode::BadMessage),
-    };
+    let response = read_response(stream, handler, read_buf).await?;
 
     if let Err(err) = serialize_packet_into_buf(response, write_buf) {
         reset_write_buf_if_oversized(write_buf);
@@ -154,13 +143,7 @@ where
     Fut: Future<Output = Result<(), E>>,
     E: fmt::Display,
 {
-    let mut packet_buf = read_packet_into_buf(stream, read_buf).await?;
-
-    let response = match Packet::try_from(packet_buf.as_mut_bytes()) {
-        Ok(request) => process_request(request, handler).await,
-        Err(_) => Packet::error(0, StatusCode::BadMessage),
-    };
-
+    let response = read_response(stream, handler, read_buf).await?;
     let packet = match serialize_packet_split(response, write_buf) {
         Ok(packet) => packet,
         Err(err) => {
@@ -179,6 +162,33 @@ where
     Ok(())
 }
 
+async fn read_response<H, S>(
+    stream: &mut S,
+    handler: &mut H,
+    read_buf: &mut BytesMut,
+) -> Result<Packet, Error>
+where
+    H: Handler + Send,
+    S: AsyncRead + Unpin,
+{
+    let mut packet_buf = read_packet_into_buf(stream, read_buf).await?;
+    Ok(match Packet::try_from(packet_buf.as_mut_bytes()) {
+        Ok(request) => process_request(request, handler).await,
+        Err(_) => Packet::error(0, StatusCode::BadMessage),
+    })
+}
+
+fn keep_serving(result: Result<(), Error>) -> bool {
+    match result {
+        Err(Error::UnexpectedEof) => false,
+        Err(err) => {
+            warn!("{}", err);
+            false
+        }
+        Ok(_) => true,
+    }
+}
+
 /// Run processing stream as SFTP using opaque byte handles and write payloads.
 pub async fn run<S, H>(mut stream: S, mut handler: H)
 where
@@ -189,16 +199,9 @@ where
         let mut read_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
         let mut write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
 
-        loop {
-            match process_handler(&mut stream, &mut handler, &mut read_buf, &mut write_buf).await {
-                Err(Error::UnexpectedEof) => break,
-                Err(err) => {
-                    warn!("{}", err);
-                    break;
-                }
-                Ok(_) => (),
-            }
-        }
+        while keep_serving(
+            process_handler(&mut stream, &mut handler, &mut read_buf, &mut write_buf).await,
+        ) {}
 
         debug!("sftp stream ended");
     });
@@ -253,24 +256,10 @@ where
     let mut read_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
     let mut write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
 
-    loop {
-        match process_handler_with_sender(
-            stream,
-            send_bytes,
-            handler,
-            &mut read_buf,
-            &mut write_buf,
-        )
-        .await
-        {
-            Err(Error::UnexpectedEof) => break,
-            Err(err) => {
-                warn!("{}", err);
-                break;
-            }
-            Ok(_) => (),
-        }
-    }
+    while keep_serving(
+        process_handler_with_sender(stream, send_bytes, handler, &mut read_buf, &mut write_buf)
+            .await,
+    ) {}
 
     debug!("sftp stream ended");
 }
@@ -290,24 +279,16 @@ pub async fn serve_with_packet_sender<S, H, F, Fut, E>(
     let mut read_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
     let mut write_buf = BytesMut::with_capacity(PACKET_BUF_CAPACITY);
 
-    loop {
-        match process_handler_with_packet_sender(
+    while keep_serving(
+        process_handler_with_packet_sender(
             stream,
             send_packet,
             handler,
             &mut read_buf,
             &mut write_buf,
         )
-        .await
-        {
-            Err(Error::UnexpectedEof) => break,
-            Err(err) => {
-                warn!("{}", err);
-                break;
-            }
-            Ok(_) => (),
-        }
-    }
+        .await,
+    ) {}
 
     debug!("sftp stream ended");
 }

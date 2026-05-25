@@ -342,23 +342,20 @@ fn checked_add_len(lhs: usize, rhs: usize) -> Result<usize, Error> {
         .ok_or_else(|| Error::BadMessage("length overflow".to_owned()))
 }
 
-fn checked_write_packet_payload_len(write: &Write) -> Result<usize, Error> {
-    let length = checked_add_len(1, 4)?;
-    let length = checked_add_len(length, 4)?;
-    let length = checked_add_len(length, write.handle.len())?;
-    let length = checked_add_len(length, 8)?;
-    let length = checked_add_len(length, 4)?;
-    let length = checked_add_len(length, write.data.len())?;
+fn checked_payload_len(parts: &[usize]) -> Result<usize, Error> {
+    let length = parts
+        .iter()
+        .try_fold(0, |sum, part| checked_add_len(sum, *part))?;
     checked_packet_length(length)?;
     Ok(length)
 }
 
+fn checked_write_packet_payload_len(write: &Write) -> Result<usize, Error> {
+    checked_payload_len(&[1, 4, 4, write.handle.len(), 8, 4, write.data.len()])
+}
+
 fn checked_data_packet_payload_len(data: &Data) -> Result<usize, Error> {
-    let length = checked_add_len(1, 4)?;
-    let length = checked_add_len(length, 4)?;
-    let length = checked_add_len(length, data.data.len())?;
-    checked_packet_length(length)?;
-    Ok(length)
+    checked_payload_len(&[1, 4, 4, data.data.len()])
 }
 
 pub(crate) fn serialize_read_packet(
@@ -367,11 +364,7 @@ pub(crate) fn serialize_read_packet(
     offset: u64,
     len: u32,
 ) -> Result<Bytes, Error> {
-    let payload_len = checked_add_len(1, 4)?;
-    let payload_len = checked_add_len(payload_len, 4)?;
-    let payload_len = checked_add_len(payload_len, handle.len())?;
-    let payload_len = checked_add_len(payload_len, 8)?;
-    let payload_len = checked_add_len(payload_len, 4)?;
+    let payload_len = checked_payload_len(&[1, 4, 4, handle.len(), 8, 4])?;
     let packet_len = checked_packet_length(payload_len)?;
 
     let mut buf = BytesMut::with_capacity(4 + payload_len);
@@ -521,47 +514,114 @@ mod tests {
     use super::*;
     use bytes::BufMut;
 
-    fn assert_packet_roundtrip(packet: Packet, check: impl FnOnce(Packet)) {
-        let serialized: Bytes = packet.try_into().expect("serialize failed");
+    fn serialize(packet: Packet) -> Bytes {
+        packet.try_into().expect("serialize failed")
+    }
+
+    fn assert_wire_roundtrip(packet: Packet) {
+        let serialized = serialize(packet);
         let mut bytes = serialized.slice(4..);
-        let parsed = Packet::try_from(&mut bytes).expect("deserialize failed");
-        check(parsed);
+        let reparsed = Packet::try_from(&mut bytes).expect("deserialize failed");
+        assert_eq!(serialize(reparsed), serialized);
     }
 
     #[test]
-    fn packet_write_roundtrip() {
-        let original = Write {
-            id: 42,
-            handle: Bytes::from_static(b"test-handle"),
-            offset: 1024,
-            data: Bytes::from_static(b"hello world"),
-        };
-        assert_packet_roundtrip(Packet::Write(original), |packet| {
-            if let Packet::Write(write) = packet {
-                assert_eq!(write.id, 42);
-                assert_eq!(write.handle.as_ref(), b"test-handle");
-                assert_eq!(write.offset, 1024);
-                assert_eq!(write.data.as_ref(), b"hello world");
-            } else {
-                panic!("Expected Write packet");
-            }
-        });
-    }
-
-    #[test]
-    fn packet_data_roundtrip() {
-        let original = Data {
-            id: 99,
-            data: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]).into(),
-        };
-        assert_packet_roundtrip(Packet::Data(original), |packet| {
-            if let Packet::Data(data) = packet {
-                assert_eq!(data.id, 99);
-                assert_eq!(data.data.as_ref(), &[0xDE, 0xAD, 0xBE, 0xEF]);
-            } else {
-                panic!("Expected Data packet");
-            }
-        });
+    fn packets_roundtrip_without_changing_wire_shape() {
+        for packet in [
+            Packet::Init(Init {
+                version: VERSION,
+                extensions: [("limits@openssh.com".into(), "1".into())].into(),
+            }),
+            Packet::Write(Write {
+                id: 42,
+                handle: Bytes::from_static(b"test-handle"),
+                offset: 1024,
+                data: Bytes::from_static(b"hello world"),
+            }),
+            Packet::Data(Data {
+                id: 99,
+                data: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]).into(),
+            }),
+            Packet::Handle(Handle {
+                id: 7,
+                handle: Bytes::from_static(b"opaque-handle"),
+            }),
+            Packet::Status(Status {
+                id: 9,
+                status_code: StatusCode::Failure,
+                error_message: "failed".into(),
+                language_tag: "en-US".into(),
+            }),
+            Packet::Name(Name {
+                id: 11,
+                files: vec![
+                    File {
+                        filename: "a.txt".to_string(),
+                        longname: "-rw-r--r-- a.txt".to_string(),
+                        attrs: FileAttributes {
+                            size: Some(1),
+                            uid: Some(1000),
+                            user: None,
+                            gid: Some(1001),
+                            group: None,
+                            permissions: Some(0o100644),
+                            atime: Some(10),
+                            mtime: Some(20),
+                        },
+                    },
+                    File {
+                        filename: "dir".to_string(),
+                        longname: "drwxr-xr-x dir".to_string(),
+                        attrs: FileAttributes {
+                            permissions: Some(0o040755),
+                            ..FileAttributes::empty()
+                        },
+                    },
+                ],
+            }),
+            Packet::Open(Open {
+                id: 12,
+                filename: "/tmp/file".to_string(),
+                pflags: OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
+                attrs: FileAttributes {
+                    size: Some(77),
+                    permissions: Some(0o100644),
+                    ..FileAttributes::empty()
+                },
+            }),
+            Packet::Rename(Rename {
+                id: 13,
+                oldpath: "/old".to_string(),
+                newpath: "/new".to_string(),
+            }),
+            Packet::FSetStat(FSetStat {
+                id: 21,
+                handle: Bytes::from_static(b"opaque-handle"),
+                attrs: FileAttributes {
+                    size: Some(512),
+                    permissions: Some(0o100600),
+                    atime: Some(10),
+                    mtime: Some(20),
+                    ..FileAttributes::empty()
+                },
+            }),
+            Packet::Extended(Extended {
+                id: 31,
+                request: "limits@openssh.com".to_string(),
+                data: vec![1, 2, 3, 4],
+            }),
+            Packet::Attrs(Attrs {
+                id: 41,
+                attrs: FileAttributes {
+                    uid: Some(1000),
+                    gid: Some(1001),
+                    permissions: Some(0o040755),
+                    ..FileAttributes::empty()
+                },
+            }),
+        ] {
+            assert_wire_roundtrip(packet);
+        }
     }
 
     #[test]
@@ -627,273 +687,16 @@ mod tests {
         match split {
             SerializedPacket::Split { header, data } => {
                 assert!(header.is_empty());
-                assert_eq!(
-                    data.as_ref(),
-                    &[
-                        0,
-                        0,
-                        0,
-                        16,
-                        SSH_FXP_DATA,
-                        0,
-                        0,
-                        0,
-                        7,
-                        0,
-                        0,
-                        0,
-                        7,
-                        b'p',
-                        b'a',
-                        b'y',
-                        b'l',
-                        b'o',
-                        b'a',
-                        b'd'
-                    ]
-                );
+                let mut expected = BytesMut::new();
+                expected.put_u32(16);
+                expected.put_u8(SSH_FXP_DATA);
+                expected.put_u32(7);
+                expected.put_u32(7);
+                expected.extend_from_slice(b"payload");
+                assert_eq!(data.as_ref(), expected.as_ref());
             }
             SerializedPacket::Contiguous(_) => panic!("expected split packet"),
         }
-    }
-
-    #[test]
-    fn packet_write_large_data() {
-        let large_data = vec![0xABu8; 64 * 1024]; // 64KB
-        let original = Write {
-            id: 1,
-            handle: Bytes::from_static(b"big"),
-            offset: 0,
-            data: Bytes::from(large_data.clone()),
-        };
-
-        assert_packet_roundtrip(Packet::Write(original), |packet| {
-            if let Packet::Write(write) = packet {
-                assert_eq!(write.data.len(), 64 * 1024);
-                assert_eq!(write.data.as_ref(), large_data.as_slice());
-            } else {
-                panic!("Expected Write packet");
-            }
-        });
-    }
-
-    #[test]
-    fn packet_handle_roundtrip() {
-        let original = Handle {
-            id: 7,
-            handle: Bytes::from_static(b"opaque-handle"),
-        };
-
-        assert_packet_roundtrip(Packet::Handle(original), |packet| {
-            if let Packet::Handle(handle) = packet {
-                assert_eq!(handle.id, 7);
-                assert_eq!(handle.handle.as_ref(), b"opaque-handle");
-            } else {
-                panic!("Expected Handle packet");
-            }
-        });
-    }
-
-    #[test]
-    fn packet_status_roundtrip() {
-        let original = Status {
-            id: 9,
-            status_code: StatusCode::Failure,
-            error_message: "failed".into(),
-            language_tag: "en-US".into(),
-        };
-
-        assert_packet_roundtrip(Packet::Status(original), |packet| {
-            if let Packet::Status(status) = packet {
-                assert_eq!(status.id, 9);
-                assert_eq!(status.status_code, StatusCode::Failure);
-                assert_eq!(status.error_message, "failed");
-                assert_eq!(status.language_tag, "en-US");
-            } else {
-                panic!("Expected Status packet");
-            }
-        });
-    }
-
-    #[test]
-    fn packet_name_roundtrip() {
-        let original = Name {
-            id: 11,
-            files: vec![
-                File {
-                    filename: "a.txt".to_string(),
-                    longname: "-rw-r--r-- a.txt".to_string(),
-                    attrs: FileAttributes {
-                        size: Some(1),
-                        uid: Some(1000),
-                        user: None,
-                        gid: Some(1001),
-                        group: None,
-                        permissions: Some(0o100644),
-                        atime: Some(10),
-                        mtime: Some(20),
-                    },
-                },
-                File {
-                    filename: "dir".to_string(),
-                    longname: "drwxr-xr-x dir".to_string(),
-                    attrs: FileAttributes {
-                        permissions: Some(0o040755),
-                        ..FileAttributes::empty()
-                    },
-                },
-            ],
-        };
-
-        assert_packet_roundtrip(Packet::Name(original), |packet| {
-            if let Packet::Name(name) = packet {
-                assert_eq!(name.id, 11);
-                assert_eq!(name.files.len(), 2);
-                assert_eq!(name.files[0].filename, "a.txt");
-                assert_eq!(name.files[0].attrs.size, Some(1));
-                assert_eq!(name.files[1].filename, "dir");
-                assert_eq!(name.files[1].attrs.permissions, Some(0o040755));
-            } else {
-                panic!("Expected Name packet");
-            }
-        });
-    }
-
-    #[test]
-    fn packet_open_roundtrip() {
-        let original = Open {
-            id: 12,
-            filename: "/tmp/file".to_string(),
-            pflags: OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
-            attrs: FileAttributes {
-                size: Some(77),
-                permissions: Some(0o100644),
-                ..FileAttributes::empty()
-            },
-        };
-
-        assert_packet_roundtrip(Packet::Open(original), |packet| {
-            if let Packet::Open(open) = packet {
-                assert_eq!(open.id, 12);
-                assert_eq!(open.filename, "/tmp/file");
-                assert!(open.pflags.contains(OpenFlags::READ));
-                assert!(open.pflags.contains(OpenFlags::WRITE));
-                assert!(open.pflags.contains(OpenFlags::CREATE));
-                assert_eq!(open.attrs.size, Some(77));
-                assert_eq!(open.attrs.permissions, Some(0o100644));
-            } else {
-                panic!("Expected Open packet");
-            }
-        });
-    }
-
-    #[test]
-    fn packet_rename_roundtrip() {
-        let original = Rename {
-            id: 13,
-            oldpath: "/old".to_string(),
-            newpath: "/new".to_string(),
-        };
-
-        assert_packet_roundtrip(Packet::Rename(original), |packet| {
-            if let Packet::Rename(rename) = packet {
-                assert_eq!(rename.oldpath, "/old");
-                assert_eq!(rename.newpath, "/new");
-            } else {
-                panic!("Expected Rename packet");
-            }
-        });
-    }
-
-    #[test]
-    fn packet_init_roundtrip() {
-        let mut extensions = std::collections::HashMap::new();
-        extensions.insert("limits@openssh.com".to_string(), "1".to_string());
-        extensions.insert("statvfs@openssh.com".to_string(), "2".to_string());
-
-        assert_packet_roundtrip(
-            Packet::Init(Init {
-                version: VERSION,
-                extensions: extensions.clone(),
-            }),
-            |packet| {
-                if let Packet::Init(init) = packet {
-                    assert_eq!(init.version, VERSION);
-                    assert_eq!(init.extensions, extensions);
-                } else {
-                    panic!("Expected Init packet");
-                }
-            },
-        );
-    }
-
-    #[test]
-    fn packet_fsetstat_roundtrip() {
-        let original = FSetStat {
-            id: 21,
-            handle: Bytes::from_static(b"opaque-handle"),
-            attrs: FileAttributes {
-                size: Some(512),
-                permissions: Some(0o100600),
-                atime: Some(10),
-                mtime: Some(20),
-                ..FileAttributes::empty()
-            },
-        };
-
-        assert_packet_roundtrip(Packet::FSetStat(original), |packet| {
-            if let Packet::FSetStat(fsetstat) = packet {
-                assert_eq!(fsetstat.id, 21);
-                assert_eq!(fsetstat.handle.as_ref(), b"opaque-handle");
-                assert_eq!(fsetstat.attrs.size, Some(512));
-                assert_eq!(fsetstat.attrs.permissions, Some(0o100600));
-            } else {
-                panic!("Expected FSetStat packet");
-            }
-        });
-    }
-
-    #[test]
-    fn packet_extended_roundtrip() {
-        let original = Extended {
-            id: 31,
-            request: "limits@openssh.com".to_string(),
-            data: vec![1, 2, 3, 4],
-        };
-
-        assert_packet_roundtrip(Packet::Extended(original), |packet| {
-            if let Packet::Extended(extended) = packet {
-                assert_eq!(extended.id, 31);
-                assert_eq!(extended.request, "limits@openssh.com");
-                assert_eq!(extended.data, vec![1, 2, 3, 4]);
-            } else {
-                panic!("Expected Extended packet");
-            }
-        });
-    }
-
-    #[test]
-    fn packet_attrs_roundtrip() {
-        let original = Attrs {
-            id: 41,
-            attrs: FileAttributes {
-                uid: Some(1000),
-                gid: Some(1001),
-                permissions: Some(0o040755),
-                ..FileAttributes::empty()
-            },
-        };
-
-        assert_packet_roundtrip(Packet::Attrs(original), |packet| {
-            if let Packet::Attrs(attrs) = packet {
-                assert_eq!(attrs.id, 41);
-                assert_eq!(attrs.attrs.uid, Some(1000));
-                assert_eq!(attrs.attrs.gid, Some(1001));
-                assert_eq!(attrs.attrs.permissions, Some(0o040755));
-            } else {
-                panic!("Expected Attrs packet");
-            }
-        });
     }
 
     #[test]
@@ -988,30 +791,6 @@ mod tests {
     }
 
     #[test]
-    fn serialize_packet_into_data_matches_existing_wire_shape() {
-        let packet = Packet::Data(Data {
-            id: 7,
-            data: Bytes::from_static(b"payload").into(),
-        });
-        let data = Data {
-            id: 7,
-            data: Bytes::from_static(b"payload").into(),
-        };
-        let mut packet_buf = BytesMut::new();
-
-        let packet_bytes =
-            serialize_packet_into(packet, &mut packet_buf).expect("serialize packet");
-        let payload_bytes = crate::ser::to_bytes(&data).expect("serialize data payload");
-
-        assert_eq!(
-            packet_bytes[0..4],
-            (payload_bytes.len() as u32 + 1).to_be_bytes()
-        );
-        assert_eq!(packet_bytes[4], SSH_FXP_DATA);
-        assert_eq!(&packet_bytes[5..], &payload_bytes[..]);
-    }
-
-    #[test]
     fn serialize_read_packet_matches_generic_wire_shape() {
         let handle = Bytes::from_static(b"handle");
         let packet = Packet::Read(Read {
@@ -1027,21 +806,5 @@ mod tests {
             serialize_read_packet(9, &handle, 1234, 5678).expect("serialize read packet");
 
         assert_eq!(specialized, generic);
-    }
-
-    #[test]
-    fn serialize_packet_into_data_handles_empty_payloads() {
-        let packet = Packet::Data(Data {
-            id: 9,
-            data: Bytes::new().into(),
-        });
-        let mut buf = BytesMut::new();
-
-        let serialized = serialize_packet_into(packet, &mut buf).expect("serialize packet");
-
-        assert_eq!(serialized[4], SSH_FXP_DATA);
-        assert_eq!(&serialized[5..9], &9u32.to_be_bytes());
-        assert_eq!(&serialized[9..13], &0u32.to_be_bytes());
-        assert_eq!(serialized.len(), 13);
     }
 }

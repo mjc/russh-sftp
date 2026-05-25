@@ -73,8 +73,17 @@ pub fn bytes_serialize<S>(data: &Bytes, serializer: S) -> Result<S::Ok, S::Error
 where
     S: serde::Serializer,
 {
-    // Use serialize_bytes for bulk copy instead of element-by-element
     serializer.serialize_bytes(data)
+}
+
+macro_rules! unsupported_serialize {
+    ($($name:ident($ty:ty)),+ $(,)?) => {
+        $(
+            fn $name(self, _v: $ty) -> Result<Self::Ok, Self::Error> {
+                Err(Error::BadMessage(concat!(stringify!($ty), " not supported").to_owned()))
+            }
+        )+
+    };
 }
 
 impl<'a, 'b> serde::Serializer for &'a mut Serializer<'b> {
@@ -88,34 +97,20 @@ impl<'a, 'b> serde::Serializer for &'a mut Serializer<'b> {
     type SerializeStruct = &'a mut Serializer<'b>;
     type SerializeStructVariant = &'a mut Serializer<'b>;
 
-    fn serialize_bool(self, _v: bool) -> Result<Self::Ok, Self::Error> {
-        Err(Error::BadMessage("bool not supported".to_owned()))
-    }
-
-    fn serialize_i8(self, _v: i8) -> Result<Self::Ok, Self::Error> {
-        Err(Error::BadMessage("i8 not supported".to_owned()))
-    }
-
-    fn serialize_i16(self, _v: i16) -> Result<Self::Ok, Self::Error> {
-        Err(Error::BadMessage("i16 not supported".to_owned()))
-    }
-
-    fn serialize_i32(self, _v: i32) -> Result<Self::Ok, Self::Error> {
-        Err(Error::BadMessage("i32 not supported".to_owned()))
-    }
-
-    fn serialize_i64(self, _v: i64) -> Result<Self::Ok, Self::Error> {
-        Err(Error::BadMessage("i64 not supported".to_owned()))
-    }
+    unsupported_serialize!(
+        serialize_bool(bool),
+        serialize_i8(i8),
+        serialize_i16(i16),
+        serialize_i32(i32),
+        serialize_i64(i64)
+    );
 
     fn serialize_u8(self, v: u8) -> Result<Self::Ok, Self::Error> {
         self.output.put_u8(v);
         Ok(())
     }
 
-    fn serialize_u16(self, _v: u16) -> Result<Self::Ok, Self::Error> {
-        Err(Error::BadMessage("u16 not supported".to_owned()))
-    }
+    unsupported_serialize!(serialize_u16(u16));
 
     fn serialize_u32(self, v: u32) -> Result<Self::Ok, Self::Error> {
         self.output.put_u32(v);
@@ -127,17 +122,7 @@ impl<'a, 'b> serde::Serializer for &'a mut Serializer<'b> {
         Ok(())
     }
 
-    fn serialize_f32(self, _v: f32) -> Result<Self::Ok, Self::Error> {
-        Err(Error::BadMessage("f32 not supported".to_owned()))
-    }
-
-    fn serialize_f64(self, _v: f64) -> Result<Self::Ok, Self::Error> {
-        Err(Error::BadMessage("f64 not supported".to_owned()))
-    }
-
-    fn serialize_char(self, _v: char) -> Result<Self::Ok, Self::Error> {
-        Err(Error::BadMessage("char not supported".to_owned()))
-    }
+    unsupported_serialize!(serialize_f32(f32), serialize_f64(f64), serialize_char(char));
 
     fn serialize_str(self, v: &str) -> Result<Self::Ok, Self::Error> {
         let bytes = v.as_bytes();

@@ -147,62 +147,26 @@ impl_packet_for!(Data);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{de, ser};
+    use crate::ser;
 
     #[test]
-    fn data_roundtrip() {
-        let original = Data {
-            id: 42,
-            data: Bytes::from_static(b"file contents here").into(),
-        };
+    fn data_from_bytes_roundtrips_empty_small_and_large_payloads() {
+        for (id, data) in [
+            (1, Bytes::new()),
+            (42, Bytes::from_static(b"file contents here")),
+            (999, Bytes::from(vec![0xCD; 32 * 1024])),
+        ] {
+            let original = Data {
+                id,
+                data: data.into(),
+            };
 
-        let serialized = ser::to_bytes(&original).expect("serialize failed");
-        let mut bytes = serialized;
-        let deserialized: Data = de::from_bytes(&mut bytes).expect("deserialize failed");
+            let serialized = ser::to_bytes(&original).expect("serialize failed");
+            let mut bytes = serialized;
+            let deserialized = Data::from_bytes(&mut bytes).expect("deserialize failed");
 
-        assert_eq!(deserialized.id, original.id);
-        assert_eq!(deserialized.data, original.data);
-    }
-
-    #[test]
-    fn data_empty() {
-        let original = Data {
-            id: 1,
-            data: Bytes::new().into(),
-        };
-
-        let serialized = ser::to_bytes(&original).expect("serialize failed");
-        let mut bytes = serialized;
-        let deserialized: Data = de::from_bytes(&mut bytes).expect("deserialize failed");
-
-        assert_eq!(deserialized.data.len(), 0);
-    }
-
-    #[test]
-    fn data_large() {
-        let large_data = vec![0xCDu8; 32 * 1024]; // 32KB
-        let original = Data {
-            id: 999,
-            data: Bytes::from(large_data.clone()).into(),
-        };
-
-        let serialized = ser::to_bytes(&original).expect("serialize failed");
-        let mut bytes = serialized;
-        let deserialized: Data = de::from_bytes(&mut bytes).expect("deserialize failed");
-
-        assert_eq!(deserialized.data.as_ref(), large_data.as_slice());
-    }
-
-    #[test]
-    fn data_from_bytes_parses_directly() {
-        let mut bytes = BytesMut::new();
-        bytes.put_u32(7);
-        bytes.put_u32(5);
-        bytes.extend_from_slice(b"hello");
-
-        let parsed = Data::from_bytes(&mut bytes.freeze()).expect("parse data");
-
-        assert_eq!(parsed.id, 7);
-        assert_eq!(parsed.data, Bytes::from_static(b"hello"));
+            assert_eq!(deserialized.id, original.id);
+            assert_eq!(deserialized.data, original.data);
+        }
     }
 }
