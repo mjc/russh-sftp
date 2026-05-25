@@ -468,6 +468,25 @@ mod tests {
                     Ok(Packet::Data(Data { id: 8, .. }))
                 ));
             }
+            SerializedPacket::SplitInlineHeader {
+                header,
+                header_len,
+                data,
+            } => {
+                let header = &header[..usize::from(header_len)];
+                assert_eq!(header.len(), 13);
+                assert_eq!(data, Bytes::from_static(b"payload"));
+
+                let mut combined = BytesMut::with_capacity(header.len() + data.len());
+                combined.extend_from_slice(header);
+                combined.extend_from_slice(data.as_ref());
+                combined.advance(4);
+
+                assert!(matches!(
+                    Packet::try_from(&mut combined),
+                    Ok(Packet::Data(Data { id: 8, .. }))
+                ));
+            }
             SerializedPacket::Contiguous(_) => panic!("expected split packet"),
         }
     }

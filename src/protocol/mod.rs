@@ -270,7 +270,15 @@ packet_types!(define_packet_serializer);
 
 pub enum SerializedPacket {
     Contiguous(Bytes),
-    Split { header: Bytes, data: DataPayload },
+    Split {
+        header: Bytes,
+        data: DataPayload,
+    },
+    SplitInlineHeader {
+        header: [u8; 13],
+        header_len: u8,
+        data: DataPayload,
+    },
 }
 
 impl SerializedPacket {
@@ -285,6 +293,40 @@ impl SerializedPacket {
                 stream.write_all(bytes).await?;
             }
             Self::Split { header, data } => {
+                let mut header_offset = 0;
+                let mut data_offset = 0;
+
+                while header_offset < header.len() || data_offset < data.len() {
+                    let buffers = [
+                        IoSlice::new(&header[header_offset..]),
+                        IoSlice::new(&data.as_ref()[data_offset..]),
+                    ];
+
+                    let written = stream.write_vectored(&buffers).await?;
+                    if written == 0 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "failed to write entire buffer",
+                        ));
+                    }
+
+                    let mut remaining = written;
+                    if header_offset < header.len() {
+                        let header_written = remaining.min(header.len() - header_offset);
+                        header_offset += header_written;
+                        remaining -= header_written;
+                    }
+                    if remaining > 0 {
+                        data_offset += remaining;
+                    }
+                }
+            }
+            Self::SplitInlineHeader {
+                header,
+                header_len,
+                data,
+            } => {
+                let header = &header[..usize::from(*header_len)];
                 let mut header_offset = 0;
                 let mut data_offset = 0;
 
@@ -439,8 +481,13 @@ pub(crate) fn serialize_packet_split(
             });
         }
 
-        return Ok(SerializedPacket::Split {
-            header: buf.split().freeze(),
+        let mut header = [0; 13];
+        header[..buf.len()].copy_from_slice(buf);
+        let header_len = buf.len() as u8;
+        buf.clear();
+        return Ok(SerializedPacket::SplitInlineHeader {
+            header,
+            header_len,
             data: data.data,
         });
     }
@@ -652,6 +699,17 @@ mod tests {
                 combined.extend_from_slice(data.as_ref());
                 combined.freeze()
             }
+            SerializedPacket::SplitInlineHeader {
+                header,
+                header_len,
+                data,
+            } => {
+                let header = &header[..usize::from(header_len)];
+                let mut combined = BytesMut::with_capacity(header.len() + data.len());
+                combined.extend_from_slice(header);
+                combined.extend_from_slice(data.as_ref());
+                combined.freeze()
+            }
         };
 
         assert_eq!(reassembled, contiguous);
@@ -694,6 +752,9 @@ mod tests {
                 expected.put_u32(7);
                 expected.extend_from_slice(b"payload");
                 assert_eq!(data.as_ref(), expected.as_ref());
+            }
+            SerializedPacket::SplitInlineHeader { .. } => {
+                panic!("reusable data should prepend the header")
             }
             SerializedPacket::Contiguous(_) => panic!("expected split packet"),
         }
