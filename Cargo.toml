@@ -42,7 +42,6 @@ anyhow = "1.0.102"
 criterion = { version = "0.8.2", features = ["async_tokio"] }
 futures = "0.3.32"
 rand = "0.10.1"
-iai-callgrind = "0.16.1"
 
 [features]
 async-trait = ["dep:async-trait"]
@@ -63,8 +62,4 @@ required-features = ["russh-channel-data"]
 
 [[bench]]
 name = "server_session_paths"
-harness = false
-
-[[bench]]
-name = "packet_iai"
 harness = false
