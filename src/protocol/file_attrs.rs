@@ -1,3 +1,4 @@
+use bytes::Buf;
 use serde::{de::Visitor, ser::SerializeStruct, Deserialize, Deserializer, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -8,7 +9,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::utils;
+use crate::{buf::TryBuf, error::Error, utils};
 
 /// Attributes flags according to the specification
 #[derive(Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +293,55 @@ impl FileAttributes {
             mtime: None,
         }
     }
+
+    pub(crate) fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, Error> {
+        let attrs = FileAttr::from_bits_truncate(input.try_get_u32()?);
+
+        let result = Self {
+            size: if attrs.contains(FileAttr::SIZE) {
+                Some(input.try_get_u64()?)
+            } else {
+                None
+            },
+            uid: if attrs.contains(FileAttr::UIDGID) {
+                Some(input.try_get_u32()?)
+            } else {
+                None
+            },
+            user: None,
+            gid: if attrs.contains(FileAttr::UIDGID) {
+                Some(input.try_get_u32()?)
+            } else {
+                None
+            },
+            group: None,
+            permissions: if attrs.contains(FileAttr::PERMISSIONS) {
+                Some(input.try_get_u32()?)
+            } else {
+                None
+            },
+            atime: if attrs.contains(FileAttr::ACMODTIME) {
+                Some(input.try_get_u32()?)
+            } else {
+                None
+            },
+            mtime: if attrs.contains(FileAttr::ACMODTIME) {
+                Some(input.try_get_u32()?)
+            } else {
+                None
+            },
+        };
+
+        if attrs.contains(FileAttr::EXTENDED) {
+            let count = input.try_get_u32()?;
+            for _ in 0..count {
+                let _type = input.try_get_bytes()?;
+                let _data = input.try_get_bytes()?;
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 /// For packets which require dummy attributes
@@ -452,5 +502,58 @@ impl<'de> Deserialize<'de> for FileAttributes {
         }
 
         deserializer.deserialize_any(FileAttributesVisitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ser;
+
+    #[test]
+    fn file_attributes_from_bytes_matches_serde() {
+        let attrs = FileAttributes {
+            size: Some(123),
+            uid: Some(1000),
+            user: None,
+            gid: Some(1001),
+            group: None,
+            permissions: Some(0o100644),
+            atime: Some(111),
+            mtime: Some(222),
+        };
+
+        let serialized = ser::to_bytes(&attrs).expect("serialize attrs");
+        let mut bytes = serialized.clone();
+        let parsed = FileAttributes::from_bytes(&mut bytes).expect("manual parse attrs");
+
+        let mut serde_bytes = serialized;
+        let serde_parsed: FileAttributes =
+            crate::de::from_bytes(&mut serde_bytes).expect("serde parse attrs");
+
+        assert_eq!(parsed.size, serde_parsed.size);
+        assert_eq!(parsed.uid, serde_parsed.uid);
+        assert_eq!(parsed.gid, serde_parsed.gid);
+        assert_eq!(parsed.permissions, serde_parsed.permissions);
+        assert_eq!(parsed.atime, serde_parsed.atime);
+        assert_eq!(parsed.mtime, serde_parsed.mtime);
+    }
+
+    #[test]
+    fn file_attributes_from_bytes_consumes_extended_pairs() {
+        let mut bytes = bytes::BytesMut::new();
+        bytes::BufMut::put_u32(&mut bytes, FileAttr::EXTENDED.bits());
+        bytes::BufMut::put_u32(&mut bytes, 1);
+        bytes::BufMut::put_u32(&mut bytes, 4);
+        bytes.extend_from_slice(b"type");
+        bytes::BufMut::put_u32(&mut bytes, 4);
+        bytes.extend_from_slice(b"data");
+        bytes::BufMut::put_u32(&mut bytes, 0xDEADBEEF);
+
+        let mut bytes = bytes.freeze();
+        let parsed = FileAttributes::from_bytes(&mut bytes).expect("manual parse attrs");
+
+        assert!(parsed.is_empty());
+        assert_eq!(bytes.try_get_u32().expect("trailing sentinel"), 0xDEADBEEF);
     }
 }

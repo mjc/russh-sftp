@@ -1,7 +1,9 @@
+use bytes::Buf;
 use chrono::{DateTime, Utc};
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::FileAttributes;
+use crate::{buf::TryBuf, error::Error};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct File {
@@ -56,5 +58,13 @@ impl File {
             },
             self.filename
         )
+    }
+
+    pub(crate) fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, Error> {
+        Ok(Self {
+            filename: input.try_get_string()?,
+            longname: input.try_get_string()?,
+            attrs: FileAttributes::from_bytes(input)?,
+        })
     }
 }

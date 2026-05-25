@@ -1,6 +1,9 @@
+use bytes::{Buf, BufMut, BytesMut};
+use std::borrow::Cow;
 use thiserror::Error;
 
 use super::{impl_packet_for, impl_request_id, Packet, RequestId};
+use crate::{buf::TryBuf, error::Error as ProtocolError};
 
 /// Error Codes for SSH_FXP_STATUS
 #[derive(Debug, Error, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -40,15 +43,90 @@ pub enum StatusCode {
     OpUnsupported = 8,
 }
 
+impl TryFrom<u32> for StatusCode {
+    type Error = ProtocolError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Ok),
+            1 => Ok(Self::Eof),
+            2 => Ok(Self::NoSuchFile),
+            3 => Ok(Self::PermissionDenied),
+            4 => Ok(Self::Failure),
+            5 => Ok(Self::BadMessage),
+            6 => Ok(Self::NoConnection),
+            7 => Ok(Self::ConnectionLost),
+            8 => Ok(Self::OpUnsupported),
+            _ => Err(ProtocolError::BadMessage(format!(
+                "unknown status code {value}"
+            ))),
+        }
+    }
+}
+
 /// Implementation for SSH_FXP_STATUS as defined in the specification draft
 /// <https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Status {
     pub id: u32,
     pub status_code: StatusCode,
-    pub error_message: String,
-    pub language_tag: String,
+    pub error_message: Cow<'static, str>,
+    pub language_tag: Cow<'static, str>,
+}
+
+impl Status {
+    pub fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, ProtocolError> {
+        Ok(Self {
+            id: input.try_get_u32()?,
+            status_code: StatusCode::try_from(input.try_get_u32()?)?,
+            error_message: Cow::Owned(input.try_get_string()?),
+            language_tag: Cow::Owned(input.try_get_string()?),
+        })
+    }
+
+    pub(crate) fn serialize_into(&self, output: &mut BytesMut) -> Result<(), ProtocolError> {
+        let error_message = self.error_message.as_bytes();
+        let language_tag = self.language_tag.as_bytes();
+
+        output.put_u32(self.id);
+        output.put_u32(self.status_code as u32);
+        output.put_u32(
+            u32::try_from(error_message.len())
+                .map_err(|_| ProtocolError::BadMessage("length exceeds u32::MAX".to_owned()))?,
+        );
+        output.put_slice(error_message);
+        output.put_u32(
+            u32::try_from(language_tag.len())
+                .map_err(|_| ProtocolError::BadMessage("length exceeds u32::MAX".to_owned()))?,
+        );
+        output.put_slice(language_tag);
+
+        Ok(())
+    }
 }
 
 impl_request_id!(Status);
 impl_packet_for!(Status);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialize_into_matches_serde_output() {
+        let status = Status {
+            id: 11,
+            status_code: StatusCode::Ok,
+            error_message: Cow::Borrowed("Ok"),
+            language_tag: Cow::Borrowed("en-US"),
+        };
+
+        let expected = crate::ser::to_bytes(&status).expect("serialize with serde");
+        let mut actual = BytesMut::new();
+        status
+            .serialize_into(&mut actual)
+            .expect("serialize manually");
+
+        assert_eq!(actual.freeze(), expected);
+    }
+}

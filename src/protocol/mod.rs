@@ -28,13 +28,15 @@ mod version;
 mod write;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use std::borrow::Cow;
+use std::io::IoSlice;
 
-use crate::{de, error::Error, ser};
+use crate::{buf::TryBuf, error::Error, ser, utils::MAX_PACKET_SIZE};
 
 pub use self::{
     attrs::Attrs,
     close::Close,
-    data::Data,
+    data::{Data, DataPayload},
     extended::{Extended, ExtendedReply},
     file::File,
     file_attrs::{
@@ -123,36 +125,50 @@ macro_rules! impl_packet_for {
 pub(crate) use impl_packet_for;
 pub(crate) use impl_request_id;
 
-#[derive(Debug)]
-pub enum Packet {
-    Init(Init),
-    Version(Version),
-    Open(Open),
-    Close(Close),
-    Read(Read),
-    Write(Write),
-    Lstat(Lstat),
-    Fstat(Fstat),
-    SetStat(SetStat),
-    FSetStat(FSetStat),
-    OpenDir(OpenDir),
-    ReadDir(ReadDir),
-    Remove(Remove),
-    MkDir(MkDir),
-    RmDir(RmDir),
-    RealPath(RealPath),
-    Stat(Stat),
-    Rename(Rename),
-    ReadLink(ReadLink),
-    Symlink(Symlink),
-    Status(Status),
-    Handle(Handle),
-    Data(Data),
-    Name(Name),
-    Attrs(Attrs),
-    Extended(Extended),
-    ExtendedReply(ExtendedReply),
+macro_rules! packet_types {
+    ($macro:ident) => {
+        $macro! {
+            Init => SSH_FXP_INIT,
+            Version => SSH_FXP_VERSION,
+            Open => SSH_FXP_OPEN,
+            Close => SSH_FXP_CLOSE,
+            Read => SSH_FXP_READ,
+            Write => SSH_FXP_WRITE,
+            Lstat => SSH_FXP_LSTAT,
+            Fstat => SSH_FXP_FSTAT,
+            SetStat => SSH_FXP_SETSTAT,
+            FSetStat => SSH_FXP_FSETSTAT,
+            OpenDir => SSH_FXP_OPENDIR,
+            ReadDir => SSH_FXP_READDIR,
+            Remove => SSH_FXP_REMOVE,
+            MkDir => SSH_FXP_MKDIR,
+            RmDir => SSH_FXP_RMDIR,
+            RealPath => SSH_FXP_REALPATH,
+            Stat => SSH_FXP_STAT,
+            Rename => SSH_FXP_RENAME,
+            ReadLink => SSH_FXP_READLINK,
+            Symlink => SSH_FXP_SYMLINK,
+            Status => SSH_FXP_STATUS,
+            Handle => SSH_FXP_HANDLE,
+            Data => SSH_FXP_DATA,
+            Name => SSH_FXP_NAME,
+            Attrs => SSH_FXP_ATTRS,
+            Extended => SSH_FXP_EXTENDED,
+            ExtendedReply => SSH_FXP_EXTENDED_REPLY,
+        }
+    };
 }
+
+macro_rules! define_packet_enum {
+    ($($variant:ident => $type_const:ident),+ $(,)?) => {
+        #[derive(Debug)]
+        pub enum Packet {
+            $($variant($variant),)+
+        }
+    };
+}
+
+packet_types!(define_packet_enum);
 
 impl Packet {
     pub fn get_request_id(&self) -> u32 {
@@ -180,17 +196,22 @@ impl Packet {
         }
     }
 
-    pub fn status(id: u32, status_code: StatusCode, msg: &str, tag: &str) -> Self {
+    pub fn status(
+        id: u32,
+        status_code: StatusCode,
+        msg: impl Into<Cow<'static, str>>,
+        tag: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Packet::Status(Status {
             id,
             status_code,
-            error_message: msg.to_string(),
-            language_tag: tag.to_string(),
+            error_message: msg.into(),
+            language_tag: tag.into(),
         })
     }
 
     pub fn error(id: u32, status_code: StatusCode) -> Self {
-        Self::status(id, status_code, &status_code.to_string(), "en-US")
+        Self::status(id, status_code, status_code.to_string(), "en-US")
     }
 }
 
@@ -198,83 +219,653 @@ impl TryFrom<&mut Bytes> for Packet {
     type Error = Error;
 
     fn try_from(bytes: &mut Bytes) -> Result<Self, Self::Error> {
-        let r#type = bytes.try_get_u8()?;
-        debug!("packet type {}", r#type);
-
-        let request = match r#type {
-            SSH_FXP_INIT => Self::Init(de::from_bytes(bytes)?),
-            SSH_FXP_VERSION => Self::Version(de::from_bytes(bytes)?),
-            SSH_FXP_OPEN => Self::Open(de::from_bytes(bytes)?),
-            SSH_FXP_CLOSE => Self::Close(de::from_bytes(bytes)?),
-            SSH_FXP_READ => Self::Read(de::from_bytes(bytes)?),
-            SSH_FXP_WRITE => Self::Write(de::from_bytes(bytes)?),
-            SSH_FXP_LSTAT => Self::Lstat(de::from_bytes(bytes)?),
-            SSH_FXP_FSTAT => Self::Fstat(de::from_bytes(bytes)?),
-            SSH_FXP_SETSTAT => Self::SetStat(de::from_bytes(bytes)?),
-            SSH_FXP_FSETSTAT => Self::FSetStat(de::from_bytes(bytes)?),
-            SSH_FXP_OPENDIR => Self::OpenDir(de::from_bytes(bytes)?),
-            SSH_FXP_READDIR => Self::ReadDir(de::from_bytes(bytes)?),
-            SSH_FXP_REMOVE => Self::Remove(de::from_bytes(bytes)?),
-            SSH_FXP_MKDIR => Self::MkDir(de::from_bytes(bytes)?),
-            SSH_FXP_RMDIR => Self::RmDir(de::from_bytes(bytes)?),
-            SSH_FXP_REALPATH => Self::RealPath(de::from_bytes(bytes)?),
-            SSH_FXP_STAT => Self::Stat(de::from_bytes(bytes)?),
-            SSH_FXP_RENAME => Self::Rename(de::from_bytes(bytes)?),
-            SSH_FXP_READLINK => Self::ReadLink(de::from_bytes(bytes)?),
-            SSH_FXP_SYMLINK => Self::Symlink(de::from_bytes(bytes)?),
-            SSH_FXP_STATUS => Self::Status(de::from_bytes(bytes)?),
-            SSH_FXP_HANDLE => Self::Handle(de::from_bytes(bytes)?),
-            SSH_FXP_DATA => Self::Data(de::from_bytes(bytes)?),
-            SSH_FXP_NAME => Self::Name(de::from_bytes(bytes)?),
-            SSH_FXP_ATTRS => Self::Attrs(de::from_bytes(bytes)?),
-            SSH_FXP_EXTENDED => Self::Extended(de::from_bytes(bytes)?),
-            SSH_FXP_EXTENDED_REPLY => Self::ExtendedReply(de::from_bytes(bytes)?),
-            _ => return Err(Error::BadMessage("unknown type".to_owned())),
-        };
-
-        Ok(request)
+        try_from_buf(bytes)
     }
+}
+
+impl TryFrom<&mut BytesMut> for Packet {
+    type Error = Error;
+
+    fn try_from(bytes: &mut BytesMut) -> Result<Self, Self::Error> {
+        try_from_buf(bytes)
+    }
+}
+
+fn try_from_buf<B>(bytes: &mut B) -> Result<Packet, Error>
+where
+    B: Buf + TryBuf,
+{
+    let r#type = bytes.try_get_u8()?;
+    debug!("packet type {}", r#type);
+
+    macro_rules! deserialize_packet {
+        ($($variant:ident => $type_const:ident),+ $(,)?) => {
+            match r#type {
+                $($type_const => Packet::$variant($variant::from_bytes(bytes)?),)+
+                _ => return Err(Error::BadMessage("unknown type".to_owned())),
+            }
+        };
+    }
+
+    Ok(packet_types!(deserialize_packet))
+}
+
+macro_rules! define_packet_serializer {
+    ($($variant:ident => $type_const:ident),+ $(,)?) => {
+        fn serialize_packet_payload(packet: Packet, bytes: &mut BytesMut) -> Result<(), Error> {
+            match packet {
+                $(
+                    Packet::$variant(v) => {
+                        bytes.put_u8($type_const);
+                        ser::to_bytes_into(&v, bytes)?;
+                    }
+                )+
+            }
+            Ok(())
+        }
+    };
+}
+
+packet_types!(define_packet_serializer);
+
+pub enum SerializedPacket {
+    Contiguous(Bytes),
+    Split {
+        header: Bytes,
+        data: DataPayload,
+    },
+    SplitInlineHeader {
+        header: [u8; 13],
+        header_len: u8,
+        data: DataPayload,
+    },
+}
+
+impl SerializedPacket {
+    pub async fn write_to<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        stream: &mut W,
+    ) -> Result<(), std::io::Error> {
+        use tokio::io::AsyncWriteExt;
+
+        match self {
+            Self::Contiguous(bytes) => {
+                stream.write_all(bytes).await?;
+            }
+            Self::Split { header, data } => {
+                let mut header_offset = 0;
+                let mut data_offset = 0;
+
+                while header_offset < header.len() || data_offset < data.len() {
+                    let buffers = [
+                        IoSlice::new(&header[header_offset..]),
+                        IoSlice::new(&data.as_ref()[data_offset..]),
+                    ];
+
+                    let written = stream.write_vectored(&buffers).await?;
+                    if written == 0 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "failed to write entire buffer",
+                        ));
+                    }
+
+                    let mut remaining = written;
+                    if header_offset < header.len() {
+                        let header_written = remaining.min(header.len() - header_offset);
+                        header_offset += header_written;
+                        remaining -= header_written;
+                    }
+                    if remaining > 0 {
+                        data_offset += remaining;
+                    }
+                }
+            }
+            Self::SplitInlineHeader {
+                header,
+                header_len,
+                data,
+            } => {
+                let header = &header[..usize::from(*header_len)];
+                let mut header_offset = 0;
+                let mut data_offset = 0;
+
+                while header_offset < header.len() || data_offset < data.len() {
+                    let buffers = [
+                        IoSlice::new(&header[header_offset..]),
+                        IoSlice::new(&data.as_ref()[data_offset..]),
+                    ];
+
+                    let written = stream.write_vectored(&buffers).await?;
+                    if written == 0 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "failed to write entire buffer",
+                        ));
+                    }
+
+                    let mut remaining = written;
+                    if header_offset < header.len() {
+                        let header_written = remaining.min(header.len() - header_offset);
+                        header_offset += header_written;
+                        remaining -= header_written;
+                    }
+                    if remaining > 0 {
+                        data_offset += remaining;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Serialize a packet into an existing buffer, returning owned `Bytes`.
+/// The buffer is cleared and reused while serializing, then cloned into the
+/// returned `Bytes`.
+pub fn serialize_packet_into(packet: Packet, buf: &mut BytesMut) -> Result<Bytes, Error> {
+    serialize_packet_into_buf(packet, buf)?;
+    Ok(buf.clone().freeze())
+}
+
+fn checked_packet_length(length: usize) -> Result<u32, Error> {
+    if length > MAX_PACKET_SIZE {
+        return Err(Error::BadMessage(format!(
+            "length {length} exceeds maximum {MAX_PACKET_SIZE}"
+        )));
+    }
+
+    u32::try_from(length).map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))
+}
+
+fn checked_add_len(lhs: usize, rhs: usize) -> Result<usize, Error> {
+    lhs.checked_add(rhs)
+        .ok_or_else(|| Error::BadMessage("length overflow".to_owned()))
+}
+
+fn checked_payload_len(parts: &[usize]) -> Result<usize, Error> {
+    let length = parts
+        .iter()
+        .try_fold(0, |sum, part| checked_add_len(sum, *part))?;
+    checked_packet_length(length)?;
+    Ok(length)
+}
+
+fn checked_write_packet_payload_len(write: &Write) -> Result<usize, Error> {
+    checked_payload_len(&[1, 4, 4, write.handle.len(), 8, 4, write.data.len()])
+}
+
+fn checked_data_packet_payload_len(data: &Data) -> Result<usize, Error> {
+    checked_payload_len(&[1, 4, 4, data.data.len()])
+}
+
+pub(crate) fn serialize_read_packet(
+    id: u32,
+    handle: &Bytes,
+    offset: u64,
+    len: u32,
+) -> Result<Bytes, Error> {
+    let payload_len = checked_payload_len(&[1, 4, 4, handle.len(), 8, 4])?;
+    let packet_len = checked_packet_length(payload_len)?;
+
+    let mut buf = BytesMut::with_capacity(4 + payload_len);
+    buf.put_u32(packet_len);
+    buf.put_u8(SSH_FXP_READ);
+    buf.put_u32(id);
+    buf.put_u32(
+        u32::try_from(handle.len())
+            .map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))?,
+    );
+    buf.put_slice(handle);
+    buf.put_u64(offset);
+    buf.put_u32(len);
+    Ok(buf.freeze())
+}
+
+pub(crate) fn serialize_write_packet(
+    id: u32,
+    handle: &Bytes,
+    offset: u64,
+    data: &Bytes,
+) -> Result<Bytes, Error> {
+    let write = Write {
+        id,
+        handle: handle.clone(),
+        offset,
+        data: data.clone(),
+    };
+    let payload_len = checked_write_packet_payload_len(&write)?;
+    let packet_len = checked_packet_length(payload_len)?;
+
+    let mut buf = BytesMut::with_capacity(4 + payload_len);
+    buf.put_u32(packet_len);
+    buf.put_u8(SSH_FXP_WRITE);
+    buf.put_u32(id);
+    buf.put_u32(
+        u32::try_from(handle.len())
+            .map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))?,
+    );
+    buf.put_slice(handle);
+    buf.put_u64(offset);
+    buf.put_u32(
+        u32::try_from(data.len())
+            .map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))?,
+    );
+    buf.put_slice(data);
+    Ok(buf.freeze())
+}
+
+pub(crate) fn serialize_packet_split(
+    packet: Packet,
+    buf: &mut BytesMut,
+) -> Result<SerializedPacket, Error> {
+    if let Packet::Data(mut data) = packet {
+        let payload_len = checked_data_packet_payload_len(&data)?;
+        let packet_len = checked_packet_length(payload_len)?;
+        let data_len = u32::try_from(data.data.len())
+            .map_err(|_| Error::BadMessage("length exceeds u32::MAX".to_owned()))?;
+
+        buf.clear();
+        buf.reserve(13);
+        buf.put_u32(packet_len);
+        buf.put_u8(SSH_FXP_DATA);
+        buf.put_u32(data.id);
+        buf.put_u32(data_len);
+
+        if data.data.try_prepend(buf) {
+            buf.clear();
+            return Ok(SerializedPacket::Split {
+                header: Bytes::new(),
+                data: data.data,
+            });
+        }
+
+        let mut header = [0; 13];
+        header[..buf.len()].copy_from_slice(buf);
+        let header_len = buf.len() as u8;
+        buf.clear();
+        return Ok(SerializedPacket::SplitInlineHeader {
+            header,
+            header_len,
+            data: data.data,
+        });
+    }
+
+    Ok(SerializedPacket::Contiguous(serialize_packet_into(
+        packet, buf,
+    )?))
+}
+
+pub(crate) fn serialize_packet_into_buf(packet: Packet, buf: &mut BytesMut) -> Result<(), Error> {
+    buf.clear();
+
+    let result = (|| {
+        // Estimate capacity based on packet type to avoid reallocations
+        let capacity = match &packet {
+            Packet::Write(w) => {
+                let payload_len = checked_write_packet_payload_len(w)?;
+                4 + payload_len
+            }
+            Packet::Data(d) => {
+                let payload_len = checked_data_packet_payload_len(d)?;
+                4 + payload_len
+            }
+            _ => 256,
+        };
+        buf.reserve(capacity);
+
+        // Single buffer: [length:4][type:1][payload...]
+        buf.put_u32(0); // placeholder for length
+
+        match packet {
+            Packet::Data(data) => {
+                buf.put_u8(SSH_FXP_DATA);
+                data.serialize_into(buf)?;
+            }
+            Packet::Status(status) => {
+                buf.put_u8(SSH_FXP_STATUS);
+                status.serialize_into(buf)?;
+            }
+            other => {
+                serialize_packet_payload(other, buf)?;
+            }
+        }
+
+        // Patch length (excludes the 4-byte length field itself)
+        let length = checked_packet_length(buf.len() - 4)?;
+        buf[0..4].copy_from_slice(&length.to_be_bytes());
+
+        Ok(())
+    })();
+
+    if result.is_err() {
+        buf.clear();
+    }
+
+    result
 }
 
 impl TryFrom<Packet> for Bytes {
     type Error = Error;
 
     fn try_from(packet: Packet) -> Result<Self, Self::Error> {
-        let (r#type, payload): (u8, Bytes) = match packet {
-            Packet::Init(init) => (SSH_FXP_INIT, ser::to_bytes(&init)?),
-            Packet::Version(version) => (SSH_FXP_VERSION, ser::to_bytes(&version)?),
-            Packet::Open(open) => (SSH_FXP_OPEN, ser::to_bytes(&open)?),
-            Packet::Close(close) => (SSH_FXP_CLOSE, ser::to_bytes(&close)?),
-            Packet::Read(read) => (SSH_FXP_READ, ser::to_bytes(&read)?),
-            Packet::Write(write) => (SSH_FXP_WRITE, ser::to_bytes(&write)?),
-            Packet::Lstat(stat) => (SSH_FXP_LSTAT, ser::to_bytes(&stat)?),
-            Packet::Fstat(stat) => (SSH_FXP_FSTAT, ser::to_bytes(&stat)?),
-            Packet::SetStat(setstat) => (SSH_FXP_SETSTAT, ser::to_bytes(&setstat)?),
-            Packet::FSetStat(setstat) => (SSH_FXP_FSETSTAT, ser::to_bytes(&setstat)?),
-            Packet::OpenDir(opendir) => (SSH_FXP_OPENDIR, ser::to_bytes(&opendir)?),
-            Packet::ReadDir(readdir) => (SSH_FXP_READDIR, ser::to_bytes(&readdir)?),
-            Packet::Remove(remove) => (SSH_FXP_REMOVE, ser::to_bytes(&remove)?),
-            Packet::MkDir(mkdir) => (SSH_FXP_MKDIR, ser::to_bytes(&mkdir)?),
-            Packet::RmDir(rmdir) => (SSH_FXP_RMDIR, ser::to_bytes(&rmdir)?),
-            Packet::RealPath(realpath) => (SSH_FXP_REALPATH, ser::to_bytes(&realpath)?),
-            Packet::Stat(stat) => (SSH_FXP_STAT, ser::to_bytes(&stat)?),
-            Packet::Rename(rename) => (SSH_FXP_RENAME, ser::to_bytes(&rename)?),
-            Packet::ReadLink(readlink) => (SSH_FXP_READLINK, ser::to_bytes(&readlink)?),
-            Packet::Symlink(symlink) => (SSH_FXP_SYMLINK, ser::to_bytes(&symlink)?),
-            Packet::Status(status) => (SSH_FXP_STATUS, ser::to_bytes(&status)?),
-            Packet::Handle(handle) => (SSH_FXP_HANDLE, ser::to_bytes(&handle)?),
-            Packet::Data(data) => (SSH_FXP_DATA, ser::to_bytes(&data)?),
-            Packet::Name(name) => (SSH_FXP_NAME, ser::to_bytes(&name)?),
-            Packet::Attrs(attrs) => (SSH_FXP_ATTRS, ser::to_bytes(&attrs)?),
-            Packet::Extended(extended) => (SSH_FXP_EXTENDED, ser::to_bytes(&extended)?),
-            Packet::ExtendedReply(reply) => (SSH_FXP_EXTENDED_REPLY, ser::to_bytes(&reply)?),
+        let mut buf = BytesMut::new();
+        serialize_packet_into_buf(packet, &mut buf)?;
+        Ok(buf.freeze())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BufMut;
+
+    fn serialize(packet: Packet) -> Bytes {
+        packet.try_into().expect("serialize failed")
+    }
+
+    fn assert_wire_roundtrip(packet: Packet) {
+        let serialized = serialize(packet);
+        let mut bytes = serialized.slice(4..);
+        let reparsed = Packet::try_from(&mut bytes).expect("deserialize failed");
+        assert_eq!(serialize(reparsed), serialized);
+    }
+
+    #[test]
+    fn packets_roundtrip_without_changing_wire_shape() {
+        for packet in [
+            Packet::Init(Init {
+                version: VERSION,
+                extensions: [("limits@openssh.com".into(), "1".into())].into(),
+            }),
+            Packet::Write(Write {
+                id: 42,
+                handle: Bytes::from_static(b"test-handle"),
+                offset: 1024,
+                data: Bytes::from_static(b"hello world"),
+            }),
+            Packet::Data(Data {
+                id: 99,
+                data: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]).into(),
+            }),
+            Packet::Handle(Handle {
+                id: 7,
+                handle: Bytes::from_static(b"opaque-handle"),
+            }),
+            Packet::Status(Status {
+                id: 9,
+                status_code: StatusCode::Failure,
+                error_message: "failed".into(),
+                language_tag: "en-US".into(),
+            }),
+            Packet::Name(Name {
+                id: 11,
+                files: vec![
+                    File {
+                        filename: "a.txt".to_string(),
+                        longname: "-rw-r--r-- a.txt".to_string(),
+                        attrs: FileAttributes {
+                            size: Some(1),
+                            uid: Some(1000),
+                            user: None,
+                            gid: Some(1001),
+                            group: None,
+                            permissions: Some(0o100644),
+                            atime: Some(10),
+                            mtime: Some(20),
+                        },
+                    },
+                    File {
+                        filename: "dir".to_string(),
+                        longname: "drwxr-xr-x dir".to_string(),
+                        attrs: FileAttributes {
+                            permissions: Some(0o040755),
+                            ..FileAttributes::empty()
+                        },
+                    },
+                ],
+            }),
+            Packet::Open(Open {
+                id: 12,
+                filename: "/tmp/file".to_string(),
+                pflags: OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
+                attrs: FileAttributes {
+                    size: Some(77),
+                    permissions: Some(0o100644),
+                    ..FileAttributes::empty()
+                },
+            }),
+            Packet::Rename(Rename {
+                id: 13,
+                oldpath: "/old".to_string(),
+                newpath: "/new".to_string(),
+            }),
+            Packet::FSetStat(FSetStat {
+                id: 21,
+                handle: Bytes::from_static(b"opaque-handle"),
+                attrs: FileAttributes {
+                    size: Some(512),
+                    permissions: Some(0o100600),
+                    atime: Some(10),
+                    mtime: Some(20),
+                    ..FileAttributes::empty()
+                },
+            }),
+            Packet::Extended(Extended {
+                id: 31,
+                request: "limits@openssh.com".to_string(),
+                data: vec![1, 2, 3, 4],
+            }),
+            Packet::Attrs(Attrs {
+                id: 41,
+                attrs: FileAttributes {
+                    uid: Some(1000),
+                    gid: Some(1001),
+                    permissions: Some(0o040755),
+                    ..FileAttributes::empty()
+                },
+            }),
+        ] {
+            assert_wire_roundtrip(packet);
+        }
+    }
+
+    #[test]
+    fn split_data_serialization_matches_contiguous() {
+        let payload = vec![0xCAu8; 32 * 1024];
+
+        let contiguous = Bytes::try_from(Packet::Data(Data {
+            id: 42,
+            data: Bytes::from(payload.clone()).into(),
+        }))
+        .expect("contiguous serialize failed");
+
+        let mut buf = BytesMut::new();
+        let split = serialize_packet_split(
+            Packet::Data(Data {
+                id: 42,
+                data: Bytes::from(payload).into(),
+            }),
+            &mut buf,
+        )
+        .expect("split serialize failed");
+
+        let reassembled = match split {
+            SerializedPacket::Contiguous(_) => panic!("expected split packet"),
+            SerializedPacket::Split { header, data } => {
+                let mut combined = BytesMut::with_capacity(header.len() + data.len());
+                combined.extend_from_slice(&header);
+                combined.extend_from_slice(data.as_ref());
+                combined.freeze()
+            }
+            SerializedPacket::SplitInlineHeader {
+                header,
+                header_len,
+                data,
+            } => {
+                let header = &header[..usize::from(header_len)];
+                let mut combined = BytesMut::with_capacity(header.len() + data.len());
+                combined.extend_from_slice(header);
+                combined.extend_from_slice(data.as_ref());
+                combined.freeze()
+            }
         };
 
-        let length = payload.len() as u32 + 1;
+        assert_eq!(reassembled, contiguous);
+    }
+
+    #[cfg(all(feature = "russh-channel-data", not(target_arch = "wasm32")))]
+    #[test]
+    fn split_data_serialization_uses_reusable_prefix_headroom() {
+        use std::sync::Arc;
+
+        struct DropRecycler;
+
+        impl russh::ChannelDataRecycler for DropRecycler {
+            fn recycle(&self, _data: Vec<u8>) {}
+        }
+
+        let mut backing = vec![0; 13];
+        backing.extend_from_slice(b"payload");
+        let reusable =
+            russh::ReusableChannelData::try_new_with_range(backing, 13, 7, Arc::new(DropRecycler))
+                .unwrap();
+        let mut buf = BytesMut::new();
+
+        let split = serialize_packet_split(
+            Packet::Data(Data {
+                id: 7,
+                data: russh::ChannelData::Reusable(reusable).into(),
+            }),
+            &mut buf,
+        )
+        .expect("split serialize failed");
+
+        match split {
+            SerializedPacket::Split { header, data } => {
+                assert!(header.is_empty());
+                let mut expected = BytesMut::new();
+                expected.put_u32(16);
+                expected.put_u8(SSH_FXP_DATA);
+                expected.put_u32(7);
+                expected.put_u32(7);
+                expected.extend_from_slice(b"payload");
+                assert_eq!(data.as_ref(), expected.as_ref());
+            }
+            SerializedPacket::SplitInlineHeader { .. } => {
+                panic!("reusable data should prepend the header")
+            }
+            SerializedPacket::Contiguous(_) => panic!("expected split packet"),
+        }
+    }
+
+    #[test]
+    fn packet_handle_preserves_binary_bytes() {
         let mut bytes = BytesMut::new();
-        bytes.put_u32(length);
-        bytes.put_u8(r#type);
-        bytes.put_slice(&payload);
-        Ok(bytes.freeze())
+        bytes.put_u8(SSH_FXP_HANDLE);
+        bytes.put_u32(1);
+        bytes.put_u32(2);
+        bytes.extend_from_slice(&[0xFF, 0xFE]);
+
+        let mut bytes = bytes.freeze();
+        let packet = Packet::try_from(&mut bytes).expect("deserialize binary handle");
+
+        if let Packet::Handle(handle) = packet {
+            assert_eq!(handle.handle.as_ref(), &[0xFF, 0xFE]);
+        } else {
+            panic!("Expected Handle packet");
+        }
+    }
+
+    #[test]
+    fn packet_name_truncated_fails() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(SSH_FXP_NAME);
+        bytes.put_u32(1);
+        bytes.put_u32(1);
+        bytes.put_u32(5);
+        bytes.extend_from_slice(b"ab");
+
+        let mut bytes = bytes.freeze();
+        let err = Packet::try_from(&mut bytes).expect_err("truncated name should fail");
+        assert!(matches!(
+            err,
+            Error::BadMessage(_) | Error::UnexpectedBehavior(_)
+        ));
+    }
+
+    #[test]
+    fn packet_name_count_too_large_fails() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(SSH_FXP_NAME);
+        bytes.put_u32(1);
+        bytes.put_u32(2);
+        bytes.put_u32(0);
+        bytes.put_u32(0);
+        bytes.put_u32(0);
+
+        let mut bytes = bytes.freeze();
+        let err = Packet::try_from(&mut bytes).expect_err("oversized name count should fail");
+
+        assert!(matches!(err, Error::BadMessage(_)));
+    }
+
+    #[test]
+    fn serialize_packet_into_preserves_reusable_buffer_capacity() {
+        let packet = Packet::Write(Write {
+            id: 1,
+            handle: Bytes::from_static(b"handle"),
+            offset: 0,
+            data: Bytes::from(vec![0xAB; 32 * 1024]),
+        });
+        let mut buf = BytesMut::with_capacity(64 * 1024);
+        let initial_capacity = buf.capacity();
+
+        let serialized = serialize_packet_into(packet, &mut buf).expect("serialize packet");
+
+        assert!(!serialized.is_empty());
+        assert_eq!(buf.capacity(), initial_capacity);
+    }
+
+    #[test]
+    fn serialize_packet_into_buf_reuses_existing_allocation() {
+        let packet = Packet::Data(Data {
+            id: 1,
+            data: Bytes::from_static(b"payload").into(),
+        });
+        let mut buf = BytesMut::with_capacity(64 * 1024);
+        let ptr = buf.as_ptr();
+
+        serialize_packet_into_buf(packet, &mut buf).expect("serialize packet");
+
+        assert_eq!(buf.as_ptr(), ptr);
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn serialize_packet_into_rejects_oversized_packets() {
+        let err = checked_packet_length(MAX_PACKET_SIZE + 1)
+            .expect_err("oversized packet should be rejected");
+
+        assert!(matches!(err, Error::BadMessage(_)));
+    }
+
+    #[test]
+    fn serialize_read_packet_matches_generic_wire_shape() {
+        let handle = Bytes::from_static(b"handle");
+        let packet = Packet::Read(Read {
+            id: 9,
+            handle: handle.clone(),
+            offset: 1234,
+            len: 5678,
+        });
+        let mut packet_buf = BytesMut::new();
+
+        let generic = serialize_packet_into(packet, &mut packet_buf).expect("serialize packet");
+        let specialized =
+            serialize_read_packet(9, &handle, 1234, 5678).expect("serialize read packet");
+
+        assert_eq!(specialized, generic);
     }
 }

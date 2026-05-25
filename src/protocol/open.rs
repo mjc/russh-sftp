@@ -1,6 +1,8 @@
+use bytes::Buf;
 use std::fs;
 
 use super::{impl_packet_for, impl_request_id, FileAttributes, Packet, RequestId};
+use crate::{buf::TryBuf, error::Error};
 
 /// Opening flags according to the specification
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -57,6 +59,17 @@ pub struct Open {
     pub filename: String,
     pub pflags: OpenFlags,
     pub attrs: FileAttributes,
+}
+
+impl Open {
+    pub fn from_bytes<B: Buf + TryBuf>(input: &mut B) -> Result<Self, Error> {
+        Ok(Self {
+            id: input.try_get_u32()?,
+            filename: input.try_get_string()?,
+            pflags: OpenFlags::from_bits_retain(input.try_get_u32()?),
+            attrs: FileAttributes::from_bytes(input)?,
+        })
+    }
 }
 
 impl_request_id!(Open);

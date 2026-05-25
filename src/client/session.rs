@@ -4,30 +4,27 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use super::{
     error::Error,
     fs::{File, Metadata, ReadDir},
-    rawsession::{Limits, SftpResult},
-    RawSftpSession,
+    rawsession::{Limits, RawSftpSession},
+    SftpResult,
 };
 use crate::{
-    client::Config,
     extensions::{self, Statvfs},
     protocol::{FileAttributes, OpenFlags, StatusCode},
 };
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Features {
+#[derive(Debug, Default)]
+pub(crate) struct Extensions {
     pub hardlink: bool,
     pub fsync: bool,
     pub statvfs: bool,
-    pub limits: Option<Limits>,
-    pub max_concurrent_writes: usize,
-    pub max_packet_len: u32,
+    pub limits: Option<Arc<Limits>>,
 }
 
 /// High-level SFTP implementation for easy interaction with a remote file system.
 /// Contains most methods similar to the native [filesystem](std::fs)
 pub struct SftpSession {
     session: Arc<RawSftpSession>,
-    features: Features,
+    extensions: Arc<Extensions>,
 }
 
 impl SftpSession {
@@ -36,54 +33,71 @@ impl SftpSession {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        Self::new_with_config(stream, Config::default()).await
+        Self::new_opts(stream, None).await
     }
 
-    /// Creates a new session with custom configuration
-    pub async fn new_with_config<S>(stream: S, cfg: Config) -> SftpResult<Self>
+    /// Creates a new session with timeout opt before the first request
+    pub async fn new_opts<S>(stream: S, timeout: Option<u64>) -> SftpResult<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let max_concurrent_writes = cfg.max_concurrent_writes;
-        let max_packet_len = cfg.max_packet_len;
-        let mut session = RawSftpSession::new_with_config(stream, cfg);
+        let mut session = RawSftpSession::new(stream);
+
+        // todo: for new options we need builder
+        if let Some(timeout) = timeout {
+            session.set_timeout(timeout).await;
+        }
 
         let version = session.init().await?;
-        let has_extension = |name, ver| version.extensions.get(name).is_some_and(|v| v == ver);
-
-        let mut features = Features {
-            hardlink: has_extension(extensions::HARDLINK, "1"),
-            fsync: has_extension(extensions::FSYNC, "1"),
-            statvfs: has_extension(extensions::STATVFS, "2"),
+        let mut extensions = Extensions {
+            hardlink: version
+                .extensions
+                .get(extensions::HARDLINK)
+                .is_some_and(|e| e == "1"),
+            fsync: version
+                .extensions
+                .get(extensions::FSYNC)
+                .is_some_and(|e| e == "1"),
+            statvfs: version
+                .extensions
+                .get(extensions::STATVFS)
+                .is_some_and(|e| e == "2"),
             limits: None,
-            max_concurrent_writes,
-            max_packet_len,
         };
 
-        if has_extension(extensions::LIMITS, "1") {
-            let limits = Limits::from(session.limits().await?);
-            session.set_limits(limits);
-            features.limits = Some(limits);
-            if let Some(plen) = limits.packet_len {
-                features.max_packet_len = (plen as u32).min(max_packet_len);
-            }
+        if version
+            .extensions
+            .get(extensions::LIMITS)
+            .is_some_and(|e| e == "1")
+        {
+            let limits = session.limits().await?;
+            let limits = Arc::new(Limits::from(limits));
+
+            session.set_limits(limits.clone());
+            extensions.limits = Some(limits);
         }
 
         Ok(Self {
             session: Arc::new(session),
-            features,
+            extensions: Arc::new(extensions),
         })
     }
 
     /// Set the maximum response time in seconds.
     /// Default: 10 seconds
-    pub fn set_timeout(&self, secs: u64) {
-        self.session.set_timeout(secs);
+    pub async fn set_timeout(&self, secs: u64) {
+        self.session.set_timeout(secs).await;
     }
 
     /// Closes the inner channel stream.
     pub async fn close(&self) -> SftpResult<()> {
         self.session.close_session()
+    }
+
+    /// Returns limits advertised by the server, when it supports the
+    /// limits@openssh.com extension.
+    pub fn limits(&self) -> Option<&Limits> {
+        self.extensions.limits.as_deref()
     }
 
     /// Attempts to open a file in read-only mode.
@@ -120,7 +134,11 @@ impl SftpSession {
         attributes: FileAttributes,
     ) -> SftpResult<File> {
         let handle = self.session.open(filename, flags, attributes).await?.handle;
-        Ok(File::new(self.session.clone(), handle, self.features))
+        Ok(File::new(
+            self.session.clone(),
+            handle,
+            self.extensions.clone(),
+        ))
     }
 
     /// Requests the remote party for the absolute from the relative path.
@@ -168,31 +186,27 @@ impl SftpSession {
 
     /// Returns an iterator over the entries within a directory.
     pub async fn read_dir<P: Into<String>>(&self, path: P) -> SftpResult<ReadDir> {
-        let path: String = path.into();
-        let parent = Arc::from(path.as_str());
-
-        let handle = self.session.opendir(path).await?.handle;
+        let path = path.into();
         let mut files = vec![];
+        let handle = self.session.opendir(path.clone()).await?.handle;
 
         loop {
-            match self.session.readdir(handle.as_str()).await {
+            match self.session.readdir_bytes(handle.clone()).await {
                 Ok(name) => {
-                    files = name
-                        .files
-                        .into_iter()
-                        .map(|f| (f.filename, f.attrs))
-                        .chain(files)
-                        .collect();
+                    files.extend(name.files.into_iter().map(|f| (f.filename, f.attrs)));
                 }
                 Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
-                Err(err) => return Err(err),
+                Err(err) => {
+                    let _ = self.session.close_bytes(handle).await;
+                    return Err(err);
+                }
             }
         }
 
-        self.session.close(handle).await?;
+        self.session.close_bytes(handle).await?;
 
         Ok(ReadDir {
-            parent,
+            parent: path.into(),
             entries: files.into(),
         })
     }
@@ -257,7 +271,7 @@ impl SftpSession {
         O: Into<String>,
         N: Into<String>,
     {
-        if !self.features.hardlink {
+        if !self.extensions.hardlink {
             return Ok(false);
         }
 
@@ -267,7 +281,7 @@ impl SftpSession {
     /// Performs a statvfs on the remote file system path.
     /// Returns [`Ok(None)`] if the remote SFTP server does not support `statvfs@openssh.com` extension v2.
     pub async fn fs_info<P: Into<String>>(&self, path: P) -> SftpResult<Option<Statvfs>> {
-        if !self.features.statvfs {
+        if !self.extensions.statvfs {
             return Ok(None);
         }
 

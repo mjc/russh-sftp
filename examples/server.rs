@@ -1,5 +1,5 @@
+use bytes::Bytes;
 use log::{error, info, LevelFilter};
-use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
 use russh_sftp::protocol::{File, FileAttributes, Handle, Name, Status, StatusCode, Version};
@@ -104,6 +104,16 @@ impl russh::server::Handler for SshSession {
 struct SftpSession {
     version: Option<u32>,
     root_dir_read_done: bool,
+    files: HashMap<String, Vec<u8>>,
+}
+
+fn ok_status(id: u32) -> Status {
+    Status {
+        id,
+        status_code: StatusCode::Ok,
+        error_message: "Ok".into(),
+        language_tag: "en-US".into(),
+    }
 }
 
 impl russh_sftp::server::Handler for SftpSession {
@@ -128,24 +138,65 @@ impl russh_sftp::server::Handler for SftpSession {
         Ok(Version::new())
     }
 
-    async fn close(&mut self, id: u32, _handle: String) -> Result<Status, Self::Error> {
-        Ok(Status {
+    async fn close(&mut self, id: u32, _handle: Bytes) -> Result<Status, Self::Error> {
+        Ok(ok_status(id))
+    }
+
+    async fn open(
+        &mut self,
+        id: u32,
+        filename: String,
+        _pflags: russh_sftp::protocol::OpenFlags,
+        _attrs: FileAttributes,
+    ) -> Result<Handle, Self::Error> {
+        self.files.entry(filename.clone()).or_default();
+        Ok(Handle {
             id,
-            status_code: StatusCode::Ok,
-            error_message: "Ok".to_string(),
-            language_tag: "en-US".to_string(),
+            handle: filename.into(),
         })
+    }
+
+    async fn write(
+        &mut self,
+        id: u32,
+        handle: Bytes,
+        offset: u64,
+        data: Bytes,
+    ) -> Result<Status, Self::Error> {
+        let path = String::from_utf8_lossy(&handle).into_owned();
+        let offset = usize::try_from(offset).map_err(|_| StatusCode::BadMessage)?;
+        let file = self.files.entry(path).or_default();
+        if file.len() < offset {
+            file.resize(offset, 0);
+        }
+        let end = offset
+            .checked_add(data.len())
+            .ok_or(StatusCode::BadMessage)?;
+        if file.len() < end {
+            file.resize(end, 0);
+        }
+        file[offset..end].copy_from_slice(&data);
+        Ok(ok_status(id))
+    }
+
+    async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
+        self.files.remove(&filename);
+        Ok(ok_status(id))
     }
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
         info!("opendir: {}", path);
         self.root_dir_read_done = false;
-        Ok(Handle { id, handle: path })
+        Ok(Handle {
+            id,
+            handle: path.into(),
+        })
     }
 
-    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
-        info!("readdir handle: {}", handle);
-        if handle == "/" && !self.root_dir_read_done {
+    async fn readdir(&mut self, id: u32, handle: Bytes) -> Result<Name, Self::Error> {
+        let handle_str = String::from_utf8_lossy(&handle);
+        info!("readdir handle: {}", handle_str);
+        if handle_str == "/" && !self.root_dir_read_done {
             self.root_dir_read_done = true;
             return Ok(Name {
                 id,
@@ -177,7 +228,11 @@ async fn main() {
     let config = russh::server::Config {
         auth_rejection_time: Duration::from_secs(3),
         auth_rejection_time_initial: Some(Duration::from_secs(0)),
-        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()],
+        keys: vec![russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::Algorithm::Ed25519,
+        )
+        .unwrap()],
         ..Default::default()
     };
 

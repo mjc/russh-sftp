@@ -1,5 +1,7 @@
 use std::{collections::HashMap, future::Future};
 
+use bytes::Bytes;
+
 use super::{Handler, SessionHandles};
 use crate::protocol::{
     Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusCode, Version,
@@ -73,7 +75,7 @@ pub trait SessionHandler: Sized {
         _id: u32,
         _file: &'a mut Self::File,
         _offset: u64,
-        _data: Vec<u8>,
+        _data: Bytes,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send + 'a {
         unsupported(self.unimplemented())
     }
@@ -267,7 +269,7 @@ where
             .map_err(Into::into)?;
         Ok(Handle {
             id,
-            handle: self.handles.insert_file(file).into_string(),
+            handle: self.handles.insert_file(file).into_bytes(),
         })
     }
 
@@ -275,15 +277,15 @@ where
         let dir = self.handler.opendir(id, path).await.map_err(Into::into)?;
         Ok(Handle {
             id,
-            handle: self.handles.insert_dir(dir).into_string(),
+            handle: self.handles.insert_dir(dir).into_bytes(),
         })
     }
 
-    async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
-        if let Some(file) = self.handles.remove_file_raw(&handle) {
+    async fn close(&mut self, id: u32, handle: Bytes) -> Result<Status, Self::Error> {
+        if let Some(file) = self.handles.remove_file_bytes(&handle) {
             return self.handler.close_file(id, file).await.map_err(Into::into);
         }
-        if let Some(dir) = self.handles.remove_dir_raw(&handle) {
+        if let Some(dir) = self.handles.remove_dir_bytes(&handle) {
             return self.handler.close_dir(id, dir).await.map_err(Into::into);
         }
         Err(StatusCode::Failure)
@@ -292,13 +294,13 @@ where
     async fn read(
         &mut self,
         id: u32,
-        handle: String,
+        handle: Bytes,
         offset: u64,
         len: u32,
     ) -> Result<Data, Self::Error> {
         let file = self
             .handles
-            .get_file_mut_raw(&handle)
+            .get_file_mut_bytes(&handle)
             .ok_or(StatusCode::Failure)?;
         self.handler
             .read(id, file, offset, len)
@@ -309,13 +311,13 @@ where
     async fn write(
         &mut self,
         id: u32,
-        handle: String,
+        handle: Bytes,
         offset: u64,
-        data: Vec<u8>,
+        data: Bytes,
     ) -> Result<Status, Self::Error> {
         let file = self
             .handles
-            .get_file_mut_raw(&handle)
+            .get_file_mut_bytes(&handle)
             .ok_or(StatusCode::Failure)?;
         self.handler
             .write(id, file, offset, data)
@@ -323,19 +325,19 @@ where
             .map_err(Into::into)
     }
 
-    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
+    async fn readdir(&mut self, id: u32, handle: Bytes) -> Result<Name, Self::Error> {
         let dir = self
             .handles
-            .get_dir_mut_raw(&handle)
+            .get_dir_mut_bytes(&handle)
             .ok_or(StatusCode::Failure)?;
         self.handler.readdir(id, dir).await.map_err(Into::into)
     }
 
-    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
-        if let Some(file) = self.handles.get_file_mut_raw(&handle) {
+    async fn fstat(&mut self, id: u32, handle: Bytes) -> Result<Attrs, Self::Error> {
+        if let Some(file) = self.handles.get_file_mut_bytes(&handle) {
             return self.handler.fstat_file(id, file).await.map_err(Into::into);
         }
-        if let Some(dir) = self.handles.get_dir_mut_raw(&handle) {
+        if let Some(dir) = self.handles.get_dir_mut_bytes(&handle) {
             return self.handler.fstat_dir(id, dir).await.map_err(Into::into);
         }
         Err(StatusCode::Failure)
@@ -344,17 +346,17 @@ where
     async fn fsetstat(
         &mut self,
         id: u32,
-        handle: String,
+        handle: Bytes,
         attrs: FileAttributes,
     ) -> Result<Status, Self::Error> {
-        if let Some(file) = self.handles.get_file_mut_raw(&handle) {
+        if let Some(file) = self.handles.get_file_mut_bytes(&handle) {
             return self
                 .handler
                 .fsetstat_file(id, file, attrs)
                 .await
                 .map_err(Into::into);
         }
-        if let Some(dir) = self.handles.get_dir_mut_raw(&handle) {
+        if let Some(dir) = self.handles.get_dir_mut_bytes(&handle) {
             return self
                 .handler
                 .fsetstat_dir(id, dir, attrs)
@@ -469,6 +471,7 @@ mod tests {
         closed_files: Vec<String>,
     }
 
+    #[allow(clippy::manual_async_fn)]
     impl SessionHandler for TestHandler {
         type Error = StatusCode;
         type File = String;
@@ -516,7 +519,7 @@ mod tests {
             async move {
                 Ok(Data {
                     id,
-                    data: format!("{file}:{offset}:{len}").into_bytes(),
+                    data: Bytes::from(format!("{file}:{offset}:{len}")).into(),
                 })
             }
         }
@@ -536,7 +539,7 @@ mod tests {
         }
     }
 
-    async fn handles(session: &mut ManagedSession<TestHandler>) -> (String, String) {
+    async fn handles(session: &mut ManagedSession<TestHandler>) -> (Bytes, Bytes) {
         let file = Handler::open(
             session,
             1,
@@ -563,8 +566,9 @@ mod tests {
             Handler::read(&mut session, 2, file.clone(), 7, 9)
                 .await
                 .unwrap()
-                .data,
-            b"file.txt:7:9"
+                .data
+                .into_bytes(),
+            Bytes::from_static(b"file.txt:7:9")
         );
         assert_eq!(
             Handler::readdir(&mut session, 2, dir).await.unwrap().files[0].filename,
@@ -599,7 +603,7 @@ mod tests {
             StatusCode::Failure
         );
         assert_eq!(
-            Handler::read(&mut owner, 2, "bad".into(), 0, 1)
+            Handler::read(&mut owner, 2, Bytes::from_static(b"bad"), 0, 1)
                 .await
                 .unwrap_err(),
             StatusCode::Failure
