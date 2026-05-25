@@ -661,20 +661,32 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn read_decodes_wire_file_handle_to_typed_file_state() {
-        let mut session = ManagedSession::new(TestHandler::default());
-        let handle = Handler::open(
-            &mut session,
+    async fn open_file(session: &mut ManagedSession<TestHandler>) -> Bytes {
+        Handler::open(
+            session,
             1,
             "file.txt".to_string(),
             OpenFlags::READ,
             FileAttributes::empty(),
         )
         .await
-        .expect("open");
+        .expect("open")
+        .handle
+    }
 
-        let data = Handler::read(&mut session, 2, handle.handle, 7, 9)
+    async fn open_dir(session: &mut ManagedSession<TestHandler>) -> Bytes {
+        Handler::opendir(session, 1, "/tmp".to_string())
+            .await
+            .expect("opendir")
+            .handle
+    }
+
+    #[tokio::test]
+    async fn read_decodes_wire_file_handle_to_typed_file_state() {
+        let mut session = ManagedSession::new(TestHandler::default());
+        let handle = open_file(&mut session).await;
+
+        let data = Handler::read(&mut session, 2, handle, 7, 9)
             .await
             .expect("read");
 
@@ -685,11 +697,9 @@ mod tests {
     #[tokio::test]
     async fn readdir_decodes_wire_dir_handle_to_typed_dir_state() {
         let mut session = ManagedSession::new(TestHandler::default());
-        let handle = Handler::opendir(&mut session, 1, "/tmp".to_string())
-            .await
-            .expect("opendir");
+        let handle = open_dir(&mut session).await;
 
-        let names = Handler::readdir(&mut session, 2, handle.handle)
+        let names = Handler::readdir(&mut session, 2, handle)
             .await
             .expect("readdir");
 
@@ -700,11 +710,9 @@ mod tests {
     #[tokio::test]
     async fn read_rejects_dir_handle_before_user_handler() {
         let mut session = ManagedSession::new(TestHandler::default());
-        let handle = Handler::opendir(&mut session, 1, "/tmp".to_string())
-            .await
-            .expect("opendir");
+        let handle = open_dir(&mut session).await;
 
-        let result = Handler::read(&mut session, 2, handle.handle, 0, 1).await;
+        let result = Handler::read(&mut session, 2, handle, 0, 1).await;
 
         assert_eq!(result.unwrap_err(), StatusCode::Failure);
         assert_eq!(session.handler.reads, 0);
@@ -713,17 +721,9 @@ mod tests {
     #[tokio::test]
     async fn readdir_rejects_file_handle_before_user_handler() {
         let mut session = ManagedSession::new(TestHandler::default());
-        let handle = Handler::open(
-            &mut session,
-            1,
-            "file.txt".to_string(),
-            OpenFlags::READ,
-            FileAttributes::empty(),
-        )
-        .await
-        .expect("open");
+        let handle = open_file(&mut session).await;
 
-        let result = Handler::readdir(&mut session, 2, handle.handle).await;
+        let result = Handler::readdir(&mut session, 2, handle).await;
 
         assert_eq!(result.unwrap_err(), StatusCode::Failure);
         assert_eq!(session.handler.readdirs, 0);
@@ -733,17 +733,9 @@ mod tests {
     async fn rejects_handle_from_another_managed_session() {
         let mut owner = ManagedSession::new(TestHandler::default());
         let mut other = ManagedSession::new(TestHandler::default());
-        let handle = Handler::open(
-            &mut owner,
-            1,
-            "file.txt".to_string(),
-            OpenFlags::READ,
-            FileAttributes::empty(),
-        )
-        .await
-        .expect("open");
+        let handle = open_file(&mut owner).await;
 
-        let result = Handler::read(&mut other, 2, handle.handle, 0, 1).await;
+        let result = Handler::read(&mut other, 2, handle, 0, 1).await;
 
         assert_eq!(result.unwrap_err(), StatusCode::Failure);
         assert_eq!(other.handler.reads, 0);
@@ -752,16 +744,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_tampered_handle_before_user_handler() {
         let mut session = ManagedSession::new(TestHandler::default());
-        let handle = Handler::open(
-            &mut session,
-            1,
-            "file.txt".to_string(),
-            OpenFlags::READ,
-            FileAttributes::empty(),
-        )
-        .await
-        .expect("open");
-        let mut tampered = handle.handle.to_vec();
+        let mut tampered = open_file(&mut session).await.to_vec();
         tampered[3] ^= 0x80;
 
         let result = Handler::read(&mut session, 2, Bytes::from(tampered), 0, 1).await;
@@ -773,16 +756,7 @@ mod tests {
     #[tokio::test]
     async fn close_removes_file_handle_and_returns_owned_state_to_handler() {
         let mut session = ManagedSession::new(TestHandler::default());
-        let handle = Handler::open(
-            &mut session,
-            1,
-            "file.txt".to_string(),
-            OpenFlags::READ,
-            FileAttributes::empty(),
-        )
-        .await
-        .expect("open");
-        let raw = handle.handle.clone();
+        let raw = open_file(&mut session).await;
 
         Handler::close(&mut session, 2, raw.clone())
             .await
@@ -796,23 +770,13 @@ mod tests {
     #[tokio::test]
     async fn fstat_dispatches_file_and_dir_handles_to_typed_methods() {
         let mut session = ManagedSession::new(TestHandler::default());
-        let file_handle = Handler::open(
-            &mut session,
-            1,
-            "file.txt".to_string(),
-            OpenFlags::READ,
-            FileAttributes::empty(),
-        )
-        .await
-        .expect("open");
-        let dir_handle = Handler::opendir(&mut session, 2, "/tmp".to_string())
-            .await
-            .expect("opendir");
+        let file_handle = open_file(&mut session).await;
+        let dir_handle = open_dir(&mut session).await;
 
-        let file_attrs = Handler::fstat(&mut session, 3, file_handle.handle)
+        let file_attrs = Handler::fstat(&mut session, 3, file_handle)
             .await
             .expect("file fstat");
-        let dir_attrs = Handler::fstat(&mut session, 4, dir_handle.handle)
+        let dir_attrs = Handler::fstat(&mut session, 4, dir_handle)
             .await
             .expect("dir fstat");
 
@@ -825,23 +789,13 @@ mod tests {
     #[tokio::test]
     async fn fsetstat_dispatches_file_and_dir_handles_to_typed_methods() {
         let mut session = ManagedSession::new(TestHandler::default());
-        let file_handle = Handler::open(
-            &mut session,
-            1,
-            "file.txt".to_string(),
-            OpenFlags::READ,
-            FileAttributes::empty(),
-        )
-        .await
-        .expect("open");
-        let dir_handle = Handler::opendir(&mut session, 2, "/tmp".to_string())
-            .await
-            .expect("opendir");
+        let file_handle = open_file(&mut session).await;
+        let dir_handle = open_dir(&mut session).await;
 
         Handler::fsetstat(
             &mut session,
             3,
-            file_handle.handle,
+            file_handle,
             FileAttributes {
                 permissions: Some(0o644),
                 ..FileAttributes::empty()
@@ -852,7 +806,7 @@ mod tests {
         Handler::fsetstat(
             &mut session,
             4,
-            dir_handle.handle,
+            dir_handle,
             FileAttributes {
                 permissions: Some(0o755),
                 ..FileAttributes::empty()
@@ -869,17 +823,9 @@ mod tests {
     async fn fstat_rejects_handle_from_another_session_before_user_handler() {
         let mut owner = ManagedSession::new(TestHandler::default());
         let mut other = ManagedSession::new(TestHandler::default());
-        let handle = Handler::open(
-            &mut owner,
-            1,
-            "file.txt".to_string(),
-            OpenFlags::READ,
-            FileAttributes::empty(),
-        )
-        .await
-        .expect("open");
+        let handle = open_file(&mut owner).await;
 
-        let result = Handler::fstat(&mut other, 2, handle.handle).await;
+        let result = Handler::fstat(&mut other, 2, handle).await;
 
         assert_eq!(result.unwrap_err(), StatusCode::Failure);
         assert_eq!(other.handler.fstat_files, 0);

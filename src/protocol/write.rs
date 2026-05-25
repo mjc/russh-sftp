@@ -53,57 +53,37 @@ mod tests {
     use crate::{de, ser};
 
     #[test]
-    fn write_roundtrip() {
-        let original = Write {
-            id: 42,
-            handle: Bytes::from_static(b"test-handle"),
-            offset: 1024,
-            data: Bytes::from_static(b"hello world"),
-        };
+    fn write_roundtrips_empty_small_and_large_payloads() {
+        for (id, handle, offset, data) in [
+            (1, Bytes::from_static(b"h"), 0, Bytes::new()),
+            (
+                42,
+                Bytes::from_static(b"test-handle"),
+                1024,
+                Bytes::from_static(b"hello world"),
+            ),
+            (
+                999,
+                Bytes::from_static(b"big-file"),
+                u64::MAX,
+                Bytes::from(vec![0xAB; 32 * 1024]),
+            ),
+        ] {
+            let original = Write {
+                id,
+                handle,
+                offset,
+                data,
+            };
 
-        // Serialize
-        let serialized = ser::to_bytes(&original).expect("serialize failed");
+            let serialized = ser::to_bytes(&original).expect("serialize failed");
+            let mut bytes = serialized;
+            let deserialized: Write = de::from_bytes(&mut bytes).expect("deserialize failed");
 
-        // Deserialize
-        let mut bytes = serialized;
-        let deserialized: Write = de::from_bytes(&mut bytes).expect("deserialize failed");
-
-        assert_eq!(deserialized.id, original.id);
-        assert_eq!(deserialized.handle, original.handle);
-        assert_eq!(deserialized.offset, original.offset);
-        assert_eq!(deserialized.data, original.data);
-    }
-
-    #[test]
-    fn write_empty_data() {
-        let original = Write {
-            id: 1,
-            handle: Bytes::from_static(b"h"),
-            offset: 0,
-            data: Bytes::new(),
-        };
-
-        let serialized = ser::to_bytes(&original).expect("serialize failed");
-        let mut bytes = serialized;
-        let deserialized: Write = de::from_bytes(&mut bytes).expect("deserialize failed");
-
-        assert_eq!(deserialized.data.len(), 0);
-    }
-
-    #[test]
-    fn write_large_data() {
-        let large_data = vec![0xABu8; 32 * 1024]; // 32KB
-        let original = Write {
-            id: 999,
-            handle: Bytes::from_static(b"big-file"),
-            offset: u64::MAX,
-            data: Bytes::from(large_data.clone()),
-        };
-
-        let serialized = ser::to_bytes(&original).expect("serialize failed");
-        let mut bytes = serialized;
-        let deserialized: Write = de::from_bytes(&mut bytes).expect("deserialize failed");
-
-        assert_eq!(deserialized.data.as_ref(), large_data.as_slice());
+            assert_eq!(deserialized.id, original.id);
+            assert_eq!(deserialized.handle, original.handle);
+            assert_eq!(deserialized.offset, original.offset);
+            assert_eq!(deserialized.data, original.data);
+        }
     }
 }

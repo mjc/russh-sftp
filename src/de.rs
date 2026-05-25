@@ -485,59 +485,28 @@ mod tests {
     }
 
     #[test]
-    fn bytes_deserialize_roundtrip() {
-        let original = BytesField {
-            id: 42,
-            data: Bytes::from_static(b"test data"),
-        };
+    fn bytes_deserialize_roundtrips_bytes_fields() {
+        for data in [Bytes::from_static(b"test data"), Bytes::new()] {
+            let original = BytesField { id: 42, data };
 
-        let serialized = ser::to_bytes(&original).expect("serialize failed");
-        let mut bytes = serialized;
-        let deserialized: BytesField = from_bytes(&mut bytes).expect("deserialize failed");
+            let serialized = ser::to_bytes(&original).expect("serialize failed");
+            let mut bytes = serialized;
+            let deserialized: BytesField = from_bytes(&mut bytes).expect("deserialize failed");
 
-        assert_eq!(deserialized, original);
+            assert_eq!(deserialized, original);
+        }
     }
 
     #[test]
-    fn bytes_deserialize_empty() {
-        let original = BytesField {
-            id: 1,
-            data: Bytes::new(),
-        };
+    fn vec_bytes_roundtrips_vec_fields() {
+        for data in [vec![1, 2, 3, 4, 5], vec![]] {
+            let original = VecBytesField { id: 99, data };
 
-        let serialized = ser::to_bytes(&original).expect("serialize failed");
-        let mut bytes = serialized;
-        let deserialized: BytesField = from_bytes(&mut bytes).expect("deserialize failed");
+            let serialized = ser::to_bytes(&original).expect("serialize failed");
+            let mut bytes = serialized;
+            let deserialized: VecBytesField = from_bytes(&mut bytes).expect("deserialize failed");
 
-        assert_eq!(deserialized.data.len(), 0);
-    }
-
-    #[test]
-    fn vec_bytes_roundtrip() {
-        let original = VecBytesField {
-            id: 99,
-            data: vec![1, 2, 3, 4, 5],
-        };
-
-        let serialized = ser::to_bytes(&original).expect("serialize failed");
-        let mut bytes = serialized;
-        let deserialized: VecBytesField = from_bytes(&mut bytes).expect("deserialize failed");
-
-        assert_eq!(deserialized.id, original.id);
-        assert_eq!(deserialized.data, original.data);
-    }
-
-    #[test]
-    fn vec_bytes_empty() {
-        let original = VecBytesField {
-            id: 0,
-            data: vec![],
-        };
-
-        let serialized = ser::to_bytes(&original).expect("serialize failed");
-        let mut bytes = serialized;
-        let deserialized: VecBytesField = from_bytes(&mut bytes).expect("deserialize failed");
-
-        assert!(deserialized.data.is_empty());
+            assert_eq!(deserialized, original);
+        }
     }
 }

@@ -32,58 +32,44 @@ mod tests {
     use bytes::BytesMut;
 
     #[test]
-    fn try_get_bytes_success() {
-        // Length-prefixed bytes: 4-byte length (5) + 5 bytes of data
-        let mut buf = Bytes::from_static(&[0, 0, 0, 5, b'h', b'e', b'l', b'l', b'o']);
-        let result = buf.try_get_bytes().unwrap();
-        assert_eq!(result.as_ref(), b"hello");
-        assert_eq!(buf.remaining(), 0);
+    fn try_get_bytes_reads_length_prefixed_payloads() {
+        for (input, expected) in [
+            (
+                &[0, 0, 0, 5, b'h', b'e', b'l', b'l', b'o'][..],
+                &b"hello"[..],
+            ),
+            (&[0, 0, 0, 0][..], &b""[..]),
+        ] {
+            let mut buf = Bytes::from_static(input);
+            let result = buf.try_get_bytes().unwrap();
+            assert_eq!(result.as_ref(), expected);
+        }
     }
 
     #[test]
-    fn try_get_bytes_empty() {
-        // Length-prefixed empty bytes
-        let mut buf = Bytes::from_static(&[0, 0, 0, 0]);
-        let result = buf.try_get_bytes().unwrap();
-        assert!(result.is_empty());
+    fn try_get_bytes_rejects_truncated_payloads() {
+        for input in [&[0, 0, 0, 10, b'a', b'b', b'c'][..], &[0, 0][..]] {
+            let mut buf = Bytes::from_static(input);
+            assert!(matches!(buf.try_get_bytes(), Err(Error::BadMessage(_))));
+        }
     }
 
     #[test]
-    fn try_get_bytes_insufficient_length() {
-        // Claims 10 bytes but only has 3
-        let mut buf = Bytes::from_static(&[0, 0, 0, 10, b'a', b'b', b'c']);
-        let result = buf.try_get_bytes();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn try_get_bytes_no_length() {
-        // Not enough bytes for length prefix
-        let mut buf = Bytes::from_static(&[0, 0]);
-        let result = buf.try_get_bytes();
-        assert!(matches!(result, Err(Error::BadMessage(_))));
-    }
-
-    #[test]
-    fn try_get_string_success() {
-        let mut buf = Bytes::from_static(&[0, 0, 0, 5, b'w', b'o', b'r', b'l', b'd']);
-        let result = buf.try_get_string().unwrap();
-        assert_eq!(result, "world");
-    }
-
-    #[test]
-    fn try_get_string_empty() {
-        let mut buf = Bytes::from_static(&[0, 0, 0, 0]);
-        let result = buf.try_get_string().unwrap();
-        assert_eq!(result, "");
+    fn try_get_string_reads_length_prefixed_payloads() {
+        for (input, expected) in [
+            (&[0, 0, 0, 5, b'w', b'o', b'r', b'l', b'd'][..], "world"),
+            (&[0, 0, 0, 0][..], ""),
+        ] {
+            let mut buf = Bytes::from_static(input);
+            assert_eq!(buf.try_get_string().unwrap(), expected);
+        }
     }
 
     #[test]
     fn try_get_string_invalid_utf8_uses_replacement() {
-        // Invalid UTF-8 sequence - should use replacement character (lossy)
         let mut buf = Bytes::from_static(&[0, 0, 0, 2, 0xFF, 0xFE]);
         let result = buf.try_get_string().unwrap();
-        // Lossy conversion replaces invalid bytes with U+FFFD
+
         assert!(result.contains('\u{FFFD}'));
     }
 

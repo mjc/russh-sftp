@@ -158,79 +158,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn file_handles_are_unique_within_session() {
+    fn file_and_dir_handles_are_unique_within_session() {
         let mut handles = SessionHandles::<&str, &str>::new();
 
-        let first = handles.insert_file("first");
-        let second = handles.insert_file("second");
-
-        assert_ne!(first.as_bytes(), second.as_bytes());
+        assert_ne!(
+            handles.insert_file("first").as_bytes(),
+            handles.insert_file("second").as_bytes()
+        );
+        assert_ne!(
+            handles.insert_dir("first").as_bytes(),
+            handles.insert_dir("second").as_bytes()
+        );
     }
 
     #[test]
-    fn dir_handles_are_unique_within_session() {
+    fn resolves_handles_in_owning_session() {
         let mut handles = SessionHandles::<&str, &str>::new();
+        let file = handles.insert_file("file");
+        let dir = handles.insert_dir("dir");
 
-        let first = handles.insert_dir("first");
-        let second = handles.insert_dir("second");
+        let file = handles.decode_file(file.as_bytes()).expect("decode file");
+        let dir = handles.decode_dir(dir.as_bytes()).expect("decode dir");
 
-        assert_ne!(first.as_bytes(), second.as_bytes());
+        assert_eq!(handles.get_file(&file), Some(&"file"));
+        assert_eq!(handles.get_dir(&dir), Some(&"dir"));
     }
 
     #[test]
-    fn resolves_file_handle_in_owning_session() {
-        let mut handles = SessionHandles::<&str, &str>::new();
-        let handle = handles.insert_file("file");
-        let decoded = handles.decode_file(handle.as_bytes()).expect("decode file");
-
-        assert_eq!(handles.get_file(&decoded), Some(&"file"));
-    }
-
-    #[test]
-    fn resolves_dir_handle_in_owning_session() {
-        let mut handles = SessionHandles::<&str, &str>::new();
-        let handle = handles.insert_dir("dir");
-        let decoded = handles.decode_dir(handle.as_bytes()).expect("decode dir");
-
-        assert_eq!(handles.get_dir(&decoded), Some(&"dir"));
-    }
-
-    #[test]
-    fn rejects_file_handle_from_another_session() {
+    fn rejects_handles_from_another_session() {
         let mut owner = SessionHandles::<&str, &str>::new();
         let other = SessionHandles::<&str, &str>::new();
-        let handle = owner.insert_file("file");
+        let file = owner.insert_file("file");
+        let dir = owner.insert_dir("dir");
 
-        assert!(owner.decode_file(handle.as_bytes()).is_some());
-        assert!(other.decode_file(handle.as_bytes()).is_none());
+        assert!(owner.decode_file(file.as_bytes()).is_some());
+        assert!(owner.decode_dir(dir.as_bytes()).is_some());
+        assert!(other.decode_file(file.as_bytes()).is_none());
+        assert!(other.decode_dir(dir.as_bytes()).is_none());
     }
 
     #[test]
-    fn rejects_dir_handle_from_another_session() {
-        let mut owner = SessionHandles::<&str, &str>::new();
-        let other = SessionHandles::<&str, &str>::new();
-        let handle = owner.insert_dir("dir");
-
-        assert!(owner.decode_dir(handle.as_bytes()).is_some());
-        assert!(other.decode_dir(handle.as_bytes()).is_none());
-    }
-
-    #[test]
-    fn rejects_file_bytes_as_dir_handle() {
+    fn rejects_handles_decoded_as_wrong_kind() {
         let mut handles = SessionHandles::<&str, &str>::new();
-        let handle = handles.insert_file("file");
+        let file = handles.insert_file("file");
+        let dir = handles.insert_dir("dir");
 
-        assert!(handles.decode_file(handle.as_bytes()).is_some());
-        assert!(handles.decode_dir(handle.as_bytes()).is_none());
-    }
-
-    #[test]
-    fn rejects_dir_bytes_as_file_handle() {
-        let mut handles = SessionHandles::<&str, &str>::new();
-        let handle = handles.insert_dir("dir");
-
-        assert!(handles.decode_dir(handle.as_bytes()).is_some());
-        assert!(handles.decode_file(handle.as_bytes()).is_none());
+        assert!(handles.decode_file(file.as_bytes()).is_some());
+        assert!(handles.decode_dir(file.as_bytes()).is_none());
+        assert!(handles.decode_dir(dir.as_bytes()).is_some());
+        assert!(handles.decode_file(dir.as_bytes()).is_none());
     }
 
     #[test]

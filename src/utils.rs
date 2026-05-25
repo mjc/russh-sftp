@@ -157,45 +157,33 @@ mod tests {
         chunks
     }
 
-    #[tokio::test]
-    async fn read_packet_into_supports_empty_packets() {
-        let mut reader = ChunkedReader::new(packet_chunks(vec![vec![]]));
-        let mut buf = BytesMut::with_capacity(16);
+    async fn read_packet(chunks: Vec<Vec<u8>>, capacity: usize) -> Result<Bytes, Error> {
+        let mut reader = ChunkedReader::new(packet_chunks(chunks));
+        let mut buf = BytesMut::with_capacity(capacity);
+        read_packet_into(&mut reader, &mut buf).await
+    }
 
-        let packet = read_packet_into(&mut reader, &mut buf)
-            .await
-            .expect("read packet");
-
-        assert!(packet.is_empty());
-        assert!(buf.is_empty());
+    fn assert_reusable(buffer: PacketBuffer<'_>, expected: &[u8]) {
+        match buffer {
+            PacketBuffer::Reusable(reusable) => assert_eq!(reusable.as_ref(), expected),
+            PacketBuffer::Owned(_) => panic!("expected reusable packet buffer"),
+        }
     }
 
     #[tokio::test]
-    async fn read_packet_into_reads_single_byte_packets() {
-        let mut reader = ChunkedReader::new(packet_chunks(vec![vec![0xAB]]));
-        let mut buf = BytesMut::with_capacity(16);
-
-        let packet = read_packet_into(&mut reader, &mut buf)
-            .await
-            .expect("read packet");
-
-        assert_eq!(&packet[..], &[0xAB]);
-    }
-
-    #[tokio::test]
-    async fn read_packet_into_handles_partial_reads() {
-        let mut reader = ChunkedReader::new(packet_chunks(vec![
-            b"he".to_vec(),
-            b"ll".to_vec(),
-            b"o".to_vec(),
-        ]));
-        let mut buf = BytesMut::with_capacity(2);
-
-        let packet = read_packet_into(&mut reader, &mut buf)
-            .await
-            .expect("read packet");
-
-        assert_eq!(&packet[..], b"hello");
+    async fn read_packet_into_reads_empty_single_byte_and_partial_packets() {
+        for (chunks, capacity, expected) in [
+            (vec![vec![]], 16, &b""[..]),
+            (vec![vec![0xAB]], 16, &[0xAB][..]),
+            (
+                vec![b"he".to_vec(), b"ll".to_vec(), b"o".to_vec()],
+                2,
+                &b"hello"[..],
+            ),
+        ] {
+            let packet = read_packet(chunks, capacity).await.expect("read packet");
+            assert_eq!(packet.as_ref(), expected);
+        }
     }
 
     #[tokio::test]
@@ -293,11 +281,7 @@ mod tests {
             .await
             .expect("read packet");
 
-        if let PacketBuffer::Reusable(reusable) = result {
-            assert_eq!(reusable.as_ref(), b"ping");
-        } else {
-            panic!("Expected reusable packet buffer");
-        }
+        assert_reusable(result, b"ping");
     }
 
     #[tokio::test]
@@ -331,11 +315,7 @@ mod tests {
             .await
             .expect("read packet");
 
-        if let PacketBuffer::Reusable(reusable) = result {
-            assert_eq!(reusable.as_ref(), b"partial");
-        } else {
-            panic!("Expected reusable packet buffer");
-        }
+        assert_reusable(result, b"partial");
     }
 
     #[tokio::test]

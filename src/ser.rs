@@ -395,35 +395,19 @@ mod tests {
     }
 
     #[test]
-    fn bytes_serialize_produces_length_prefix() {
-        let value = BytesStruct {
-            id: 1,
-            data: Bytes::from_static(b"abc"),
-        };
+    fn bytes_serialize_writes_length_prefix_and_payload() {
+        for (data, expected_len) in [(b"abc".as_slice(), 11), (b"".as_slice(), 8)] {
+            let value = BytesStruct {
+                id: 1,
+                data: Bytes::copy_from_slice(data),
+            };
 
-        let serialized = to_bytes(&value).expect("serialize failed");
+            let serialized = to_bytes(&value).expect("serialize failed");
 
-        // Expected format: u32 id (4 bytes) + u32 length (4 bytes) + data (3 bytes)
-        assert_eq!(serialized.len(), 4 + 4 + 3);
-        // Check length prefix is 3
-        assert_eq!(&serialized[4..8], &[0, 0, 0, 3]);
-        // Check data
-        assert_eq!(&serialized[8..], b"abc");
-    }
-
-    #[test]
-    fn bytes_serialize_empty() {
-        let value = BytesStruct {
-            id: 42,
-            data: Bytes::new(),
-        };
-
-        let serialized = to_bytes(&value).expect("serialize failed");
-
-        // Expected: u32 id + u32 length (0)
-        assert_eq!(serialized.len(), 4 + 4);
-        // Check length prefix is 0
-        assert_eq!(&serialized[4..8], &[0, 0, 0, 0]);
+            assert_eq!(serialized.len(), expected_len);
+            assert_eq!(&serialized[4..8], &(data.len() as u32).to_be_bytes());
+            assert_eq!(&serialized[8..], data);
+        }
     }
 
     #[test]
@@ -447,7 +431,6 @@ mod tests {
 
         to_bytes_into(&value, &mut buf).expect("serialize failed");
 
-        // Should have original 2 bytes + 4 bytes for u32
         assert_eq!(buf.len(), 6);
         assert_eq!(&buf[..2], &[0xFF, 0xFF]);
         assert_eq!(&buf[2..], &[0, 0, 0, 42]);
