@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use criterion::{criterion_group, Criterion};
 use russh_sftp::{
     protocol::{Data, FileAttributes, Handle, Open, OpenFlags, Packet, Read, Status, StatusCode},
@@ -38,7 +39,7 @@ impl Handler for RawHandler {
         async move {
             Ok(Handle {
                 id,
-                handle: filename,
+                handle: filename.into(),
             })
         }
     }
@@ -46,14 +47,15 @@ impl Handler for RawHandler {
     fn read(
         &mut self,
         id: u32,
-        handle: String,
+        handle: Bytes,
         offset: u64,
         len: u32,
     ) -> impl Future<Output = Result<Data, Self::Error>> + Send {
         async move {
+            let handle = String::from_utf8_lossy(&handle);
             Ok(Data {
                 id,
-                data: format!("{handle}:{offset}:{len}").into_bytes(),
+                data: format!("{handle}:{offset}:{len}").into_bytes().into(),
             })
         }
     }
@@ -61,7 +63,7 @@ impl Handler for RawHandler {
     fn close(
         &mut self,
         id: u32,
-        _handle: String,
+        _handle: Bytes,
     ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
         async move { Ok(ok_status(id)) }
     }
@@ -98,7 +100,7 @@ impl SessionHandler for TypedHandler {
         async move {
             Ok(Data {
                 id,
-                data: format!("{file}:{offset}:{len}").into_bytes(),
+                data: format!("{file}:{offset}:{len}").into_bytes().into(),
             })
         }
     }
@@ -163,7 +165,10 @@ async fn run_open_read_close<H: Handler + Send + 'static>(handler: H) {
 }
 
 fn bench_server_paths(c: &mut Criterion) {
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
     let mut group = c.benchmark_group("server_session_paths");
 
     group.bench_function("raw_handler", |b| {
@@ -187,7 +192,10 @@ fn main() {
             .ok()
             .and_then(|raw| raw.parse().ok())
             .unwrap_or(100_000);
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
 
         runtime.block_on(async {
             match mode.as_str() {

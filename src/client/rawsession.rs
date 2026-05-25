@@ -237,9 +237,9 @@ impl RawSftpSession {
             result = time::timeout(Duration::from_secs(timeout), rx) => match result {
                 Ok(Ok(result)) => result,
                 Ok(Err(_)) => Err(Error::UnexpectedBehavior("request receiver dropped".into())),
-                Err(error) => {
+                Err(_) => {
                     self.requests.remove(&id);
-                    Err(error.into())
+                    Err(Error::Timeout)
                 }
             },
             _ = self.session_closed.cancelled() => {

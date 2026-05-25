@@ -180,8 +180,9 @@ impl SftpSession {
 
     /// Returns an iterator over the entries within a directory.
     pub async fn read_dir<P: Into<String>>(&self, path: P) -> SftpResult<ReadDir> {
+        let path = path.into();
         let mut files = vec![];
-        let handle = self.session.opendir(path).await?.handle;
+        let handle = self.session.opendir(path.clone()).await?.handle;
 
         loop {
             match self.session.readdir_bytes(handle.clone()).await {
@@ -199,6 +200,7 @@ impl SftpSession {
         self.session.close_bytes(handle).await?;
 
         Ok(ReadDir {
+            parent: path.into(),
             entries: files.into(),
         })
     }

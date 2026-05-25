@@ -3,6 +3,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use bytes::Bytes;
+
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 pub trait HandleTag {
@@ -39,8 +41,16 @@ impl<K> SessionHandle<K> {
         &self.raw
     }
 
+    pub fn as_bytes(&self) -> &[u8] {
+        self.raw.as_bytes()
+    }
+
     pub fn into_string(self) -> String {
         self.raw
+    }
+
+    pub fn into_bytes(self) -> Bytes {
+        Bytes::from(self.raw)
     }
 }
 
@@ -104,13 +114,13 @@ impl<F, D> SessionHandles<F, D> {
         Self::get_slot_mut(&mut self.dirs, handle.index, handle.generation)
     }
 
-    pub(crate) fn get_file_mut_raw(&mut self, raw: &str) -> Option<&mut F> {
-        let (index, generation) = self.decode_index::<FileTag>(raw)?;
+    pub(crate) fn get_file_mut_bytes(&mut self, raw: &[u8]) -> Option<&mut F> {
+        let (index, generation) = self.decode_index_bytes::<FileTag>(raw)?;
         Self::get_slot_mut(&mut self.files, index, generation)
     }
 
-    pub(crate) fn get_dir_mut_raw(&mut self, raw: &str) -> Option<&mut D> {
-        let (index, generation) = self.decode_index::<DirTag>(raw)?;
+    pub(crate) fn get_dir_mut_bytes(&mut self, raw: &[u8]) -> Option<&mut D> {
+        let (index, generation) = self.decode_index_bytes::<DirTag>(raw)?;
         Self::get_slot_mut(&mut self.dirs, index, generation)
     }
 
@@ -132,13 +142,13 @@ impl<F, D> SessionHandles<F, D> {
         )
     }
 
-    pub(crate) fn remove_file_raw(&mut self, raw: &str) -> Option<F> {
-        let (index, generation) = self.decode_index::<FileTag>(raw)?;
+    pub(crate) fn remove_file_bytes(&mut self, raw: &[u8]) -> Option<F> {
+        let (index, generation) = self.decode_index_bytes::<FileTag>(raw)?;
         Self::remove_slot(&mut self.files, &mut self.free_file, index, generation)
     }
 
-    pub(crate) fn remove_dir_raw(&mut self, raw: &str) -> Option<D> {
-        let (index, generation) = self.decode_index::<DirTag>(raw)?;
+    pub(crate) fn remove_dir_bytes(&mut self, raw: &[u8]) -> Option<D> {
+        let (index, generation) = self.decode_index_bytes::<DirTag>(raw)?;
         Self::remove_slot(&mut self.dirs, &mut self.free_dir, index, generation)
     }
 
@@ -255,11 +265,15 @@ impl<F, D> SessionHandles<F, D> {
     }
 
     fn decode_index<K: HandleTag>(&self, raw: &str) -> Option<(usize, u64)> {
-        if raw.as_bytes().first().copied()? != K::KIND as u8 {
+        self.decode_index_bytes::<K>(raw.as_bytes())
+    }
+
+    fn decode_index_bytes<K: HandleTag>(&self, raw: &[u8]) -> Option<(usize, u64)> {
+        if raw.first().copied()? != K::KIND as u8 {
             return None;
         }
 
-        let mut fields = raw[1..].splitn(3, ':');
+        let mut fields = raw[1..].splitn(3, |byte| *byte == b':');
         let session = parse_u64(fields.next()?)?;
         if session != self.session {
             return None;
@@ -325,11 +339,11 @@ fn push_u64(output: &mut String, mut value: u64) {
     }
 }
 
-fn parse_usize(raw: &str) -> Option<usize> {
+fn parse_usize(raw: &[u8]) -> Option<usize> {
     let mut value = 0usize;
     let mut digits = 0;
 
-    for byte in raw.bytes() {
+    for byte in raw.iter().copied() {
         let digit = byte.checked_sub(b'0')?;
         if digit > 9 {
             return None;
@@ -342,11 +356,11 @@ fn parse_usize(raw: &str) -> Option<usize> {
     (digits > 0).then_some(value)
 }
 
-fn parse_u64(raw: &str) -> Option<u64> {
+fn parse_u64(raw: &[u8]) -> Option<u64> {
     let mut value = 0u64;
     let mut digits = 0;
 
-    for byte in raw.bytes() {
+    for byte in raw.iter().copied() {
         let digit = byte.checked_sub(b'0')?;
         if digit > 9 {
             return None;

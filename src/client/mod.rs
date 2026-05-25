@@ -5,7 +5,7 @@ pub mod rawsession;
 mod session;
 
 pub use handler::Handler;
-pub use rawsession::RawSftpSession;
+pub use rawsession::{RawSftpSession, SftpResult};
 pub use session::SftpSession;
 
 use bytes::{Bytes, BytesMut};
